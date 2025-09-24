@@ -2,7 +2,7 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
-First, run the development server:
+开发运行：
 
 ```bash
 npm run dev
@@ -14,7 +14,15 @@ pnpm dev
 bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+打开 http://localhost:3000 查看页面。
+
+功能：
+
+- 上传或通过 URL 加载 .pcd 文件
+- 视图自适应、网格/坐标轴开关、点大小调节
+- 暗色配色，专业工具风格
+
+注意：优先支持 ASCII PCD。若是二进制 PCD，可先转换为 ASCII 再加载。
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
