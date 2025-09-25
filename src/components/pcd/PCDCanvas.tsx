@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import { Canvas, useThree, useFrame } from "@react-three/fiber";
-import { OrbitControls, Grid, Html, Stats } from "@react-three/drei";
+import { OrbitControls, Grid, Html, Stats, Line, Instances, Instance } from "@react-three/drei";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { PCDLoader } from "three/examples/jsm/loaders/PCDLoader.js";
@@ -33,6 +33,17 @@ export type PCDCanvasProps = {
   onLoadedAction?: (info: { bbox: THREE.Box3; count: number }) => void;
   onLoadingChange?: (loading: boolean) => void;
   showPerf?: boolean;
+  // trajectories
+  plannedPath?: [number, number, number][] | null;
+  livePath?: [number, number, number][] | null;
+  showPlanned?: boolean;
+  showLive?: boolean;
+  plannedColor?: string;
+  liveColor?: string;
+  useAeroAttitude?: boolean;
+  showVelocityArrow?: boolean;
+  showBreadcrumbs?: boolean;
+  breadcrumbCount?: number;
 };
 
 function SceneFitter({
@@ -136,6 +147,16 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(
       onLoadedAction,
       onLoadingChange,
       showPerf = false,
+      plannedPath = null,
+      livePath = null,
+      showPlanned = true,
+      showLive = true,
+      plannedColor = "#22c55e",
+      liveColor = "#ef4444",
+      useAeroAttitude = true,
+      showVelocityArrow = true,
+      showBreadcrumbs = true,
+      breadcrumbCount = 50,
     },
     ref
   ) {
@@ -143,7 +164,8 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(
     const [bbox, setBbox] = useState<THREE.Box3 | null>(null);
     const controlsRef = useRef<OrbitControlsImpl | null>(null);
     const fitRef = useRef<(() => void) | null>(null);
-    const originalColorRef = useRef<THREE.BufferAttribute | null>(null);
+  const originalColorRef = useRef<THREE.BufferAttribute | null>(null);
+  const workingColorAttrRef = useRef<THREE.BufferAttribute | null>(null);
     const [colorVersion, setColorVersion] = useState(0);
     const pointsRef = useRef<THREE.Points | null>(null);
     const registerFit = (fn: () => void) => {
@@ -176,11 +198,22 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(
           const geometry = points.geometry as THREE.BufferGeometry;
           geometry.computeBoundingBox();
           setGeom(geometry);
-          // save original colors if any
-          const orig = geometry.getAttribute("color") as
-            | THREE.BufferAttribute
-            | undefined;
+          // setup color attributes: keep a working color attribute allocated once
+          const orig = geometry.getAttribute("color") as THREE.BufferAttribute | undefined;
           originalColorRef.current = orig ? orig.clone() : null;
+          if (orig) {
+            // reuse existing attribute as working color buffer
+            workingColorAttrRef.current = orig as THREE.BufferAttribute;
+          } else {
+            const pos = geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
+            const count = pos?.count ?? 0;
+            const buf = new Float32Array(count * 3);
+            // default white
+            for (let i = 0; i < count; i++) { const j = i * 3; buf[j] = 1; buf[j+1] = 1; buf[j+2] = 1; }
+            const attr = new THREE.BufferAttribute(buf, 3);
+            geometry.setAttribute("color", attr);
+            workingColorAttrRef.current = attr;
+          }
           const b = geometry.boundingBox ?? new THREE.Box3().setFromObject(points);
           const clone = b.clone();
           setBbox(clone);
@@ -236,11 +269,17 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(
       if (!pos) return;
 
       const applyOriginal = () => {
+        const work = workingColorAttrRef.current;
+        if (!work) return;
+        const arr = work.array as Float32Array;
+        const count = (geom.getAttribute("position") as THREE.BufferAttribute).count;
         if (originalColorRef.current) {
-          geom.setAttribute("color", originalColorRef.current.clone());
+          const origArr = originalColorRef.current.array as ArrayLike<number>;
+          for (let i = 0; i < count * 3; i++) arr[i] = Number(origArr[i] ?? 1);
         } else {
-          if (geom.getAttribute("color")) geom.deleteAttribute("color");
+          for (let i = 0; i < count; i++) { const j = i * 3; arr[j] = 1; arr[j+1] = 1; arr[j+2] = 1; }
         }
+        work.needsUpdate = true;
         setColorVersion((v) => v + 1);
       };
 
@@ -249,14 +288,15 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(
         return;
       }
 
-      let buffer: Float32Array | null = null;
       const count = pos.count;
+  const work = workingColorAttrRef.current;
+  if (!work) return;
+  const buffer = work.array as Float32Array;
 
       if (colorMode === "height") {
         const bb = bbox ?? (() => { const b = new THREE.Box3(); b.setFromBufferAttribute(pos); return b; })();
         const min = bb.min.z, max = bb.max.z;
         const range = Math.max(1e-6, max - min);
-        buffer = new Float32Array(count * 3);
         for (let i = 0; i < count; i++) {
           const z = pos.getZ(i);
           const t = (z - min) / range;
@@ -273,7 +313,6 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(
           const bb = bbox ?? (() => { const b = new THREE.Box3(); b.setFromBufferAttribute(pos); return b; })();
           const min = bb.min.z, max = bb.max.z;
           const range = Math.max(1e-6, max - min);
-          buffer = new Float32Array(count * 3);
           for (let i = 0; i < count; i++) {
             const z = pos.getZ(i);
             const t = (z - min) / range;
@@ -288,7 +327,6 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(
             if (v < min) min = v; if (v > max) max = v;
           }
           const range = Math.max(1e-6, max - min);
-          buffer = new Float32Array(count * 3);
           for (let i = 0; i < count; i++) {
             const t = (intenAttr.getX(i) - min) / range;
             const [r, g, b] = turbo(t);
@@ -300,7 +338,6 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(
         const classAttr = (geom.getAttribute("classification") || geom.getAttribute("label") || geom.getAttribute("class")) as
           | THREE.BufferAttribute
           | undefined;
-        buffer = new Float32Array(count * 3);
         for (let i = 0; i < count; i++) {
           const cVal = classAttr ? classAttr.getX(i) : 0;
           const [r, g, b] = classColor(Math.round(cVal));
@@ -308,12 +345,8 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(
           buffer[j] = r; buffer[j + 1] = g; buffer[j + 2] = b;
         }
       }
-
-      if (buffer) {
-        geom.setAttribute("color", new THREE.BufferAttribute(buffer, 3));
-        (geom.getAttribute("color") as THREE.BufferAttribute).needsUpdate = true;
-        setColorVersion((v) => v + 1);
-      }
+      work.needsUpdate = true;
+      setColorVersion((v) => v + 1);
     }, [geom, bbox, colorMode]);
 
     // no-op: annotations removed for performance
@@ -336,6 +369,83 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(
         <points ref={pointsRef} geometry={geom} frustumCulled={false}>
           <pointsMaterial size={pointSize} sizeAttenuation={sizeAttenuation} vertexColors={!!geom.getAttribute('color')} />
         </points>
+      )}
+      {/* Trajectories */}
+      {showPlanned && plannedPath && plannedPath.length >= 2 && (
+        <Line points={plannedPath} color={plannedColor} lineWidth={2} />
+      )}
+      {showLive && livePath && livePath.length >= 2 && (
+        <>
+          <Line points={livePath} color={liveColor} lineWidth={2} />
+          {/* Breadcrumbs trail using drei Instances */}
+          {showBreadcrumbs && (() => {
+            const n = livePath.length;
+            const count = Math.min(breadcrumbCount, Math.max(0, n - 1));
+            if (count <= 0) return null;
+            const points = Array.from({ length: count }, (_, i) => livePath[n - 1 - i]);
+            return (
+              <Instances limit={count} range={count}>
+                <sphereGeometry args={[0.01, 6, 6]} />
+                <meshBasicMaterial color={liveColor} />
+                {points.map((p, idx) => {
+                  const scale = 0.012 * (0.4 + 0.6 * (1 - idx / count));
+                  return (
+                    <Instance key={`crumb-${idx}`} position={p as [number, number, number]} scale={scale} />
+                  );
+                })}
+              </Instances>
+            );
+          })()}
+
+          {/* UAV marker at last point with aero attitude and velocity arrow */}
+          {(() => {
+            const n = livePath.length;
+            const last = livePath[n - 1];
+            const prev = livePath[n - 2];
+            const dir = new THREE.Vector3(last[0] - prev[0], last[1] - prev[1], last[2] - prev[2]);
+            if (dir.lengthSq() < 1e-12) dir.set(0, 1, 0);
+            // smoothing
+            const smoothed = dir.clone().normalize();
+            const quat = new THREE.Quaternion();
+            quat.setFromUnitVectors(new THREE.Vector3(0, 1, 0), smoothed);
+            if (useAeroAttitude && n >= 3) {
+              const prev2 = livePath[n - 3];
+              const v1 = new THREE.Vector3(prev[0] - prev2[0], prev[1] - prev2[1], prev[2] - prev2[2]);
+              const v2 = new THREE.Vector3(last[0] - prev[0], last[1] - prev[1], last[2] - prev[2]);
+              const a = v1.clone().normalize();
+              const b = v2.clone().normalize();
+              const angle = Math.acos(Math.min(1, Math.max(-1, a.dot(b))));
+              const cross = a.clone().cross(b);
+              // assume Z 为高度，使用 Z 分量决定左右转的符号
+              const sign = Math.sign(cross.z || 0);
+              const maxRoll = THREE.MathUtils.degToRad(25);
+              const rollGain = 0.8; // 放大转弯率
+              const rollAngle = THREE.MathUtils.clamp(sign * rollGain * angle, -maxRoll, maxRoll);
+              const rollQ = new THREE.Quaternion().setFromAxisAngle(smoothed, rollAngle);
+              quat.multiply(rollQ);
+            }
+            const groupPos: [number, number, number] = [last[0], last[1], last[2]];
+            return (
+              <group position={groupPos} quaternion={quat}>
+                <mesh>
+                  <sphereGeometry args={[0.022, 12, 12]} />
+                  <meshBasicMaterial color={liveColor} />
+                </mesh>
+                {/* arrow head (longer) */}
+                <mesh position={[0, 0.07, 0]}>
+                  <coneGeometry args={[0.014, 0.07, 12]} />
+                  <meshBasicMaterial color={liveColor} />
+                </mesh>
+                {showVelocityArrow && (
+                  <mesh position={[0, 0.12, 0]} rotation={[Math.PI / 2, 0, 0]}>
+                    <cylinderGeometry args={[0.003, 0.003, 0.15, 6]} />
+                    <meshBasicMaterial color={liveColor} />
+                  </mesh>
+                )}
+              </group>
+            );
+          })()}
+        </>
       )}
       <OrbitControls ref={controlsRef} makeDefault />
       {showPerf && (

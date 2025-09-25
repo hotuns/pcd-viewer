@@ -12,6 +12,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { RefreshCw, Maximize, Upload, Link as LinkIcon } from "lucide-react";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
 // no annotations
+import { useEffect } from "react";
 
 export default function PCDViewer() {
   const canvasRef = useRef<PCDCanvasHandle | null>(null);
@@ -27,6 +28,108 @@ export default function PCDViewer() {
   const [colorMode, setColorMode] = useState<"original" | "height" | "intensity" | "classification">("original");
   const [loading, setLoading] = useState(false);
   const [showPerf, setShowPerf] = useState<boolean>(false);
+  // trajectory states
+  const [plannedPath, setPlannedPath] = useState<[number, number, number][]>([]);
+  const [livePath, setLivePath] = useState<[number, number, number][]>([]);
+  const [showPlanned, setShowPlanned] = useState(true);
+  const [showLive, setShowLive] = useState(true);
+  const [plannedColor, setPlannedColor] = useState("#22c55e");
+  const [liveColor, setLiveColor] = useState("#ef4444");
+  const [tailLimit, setTailLimit] = useState(5000);
+  const defaultWsUrl = (typeof window !== 'undefined' && window.location.hostname === 'localhost')
+    ? 'ws://localhost:3001'
+    : '/api/telemetry/ws?simulate=1';
+  const [wsUrl, setWsUrl] = useState<string>(defaultWsUrl);
+  const wsRef = useRef<WebSocket | null>(null);
+  const [simulateLive, setSimulateLive] = useState<boolean>(true);
+  const simTimerRef = useRef<number | null>(null);
+  const simSegIndexRef = useRef<number>(0);
+  const simURef = useRef<number>(0);
+
+  // simulate live path when enabled (replay plannedPath if available)
+  useEffect(() => {
+    if (!simulateLive) {
+      if (simTimerRef.current) { window.clearInterval(simTimerRef.current); simTimerRef.current = null; }
+      return;
+    }
+    // close ws if any
+    try { wsRef.current?.close(); } catch {}
+    wsRef.current = null;
+    // if we have a planned path, replay along it; else fallback to circle demo
+    if (plannedPath && plannedPath.length >= 2) {
+      // reset state
+      simSegIndexRef.current = 0;
+      simURef.current = 0;
+      setLivePath([]);
+      // precompute segment lengths
+      const segLens: number[] = [];
+      for (let i = 0; i < plannedPath.length - 1; i++) {
+        const a = plannedPath[i], b = plannedPath[i + 1];
+        const dx = b[0]-a[0], dy=b[1]-a[1], dz=b[2]-a[2];
+        segLens.push(Math.hypot(dx, dy, dz));
+      }
+      const speed = 1.0; // meters per second
+      const dt = 0.1; // seconds per tick (100ms)
+      simTimerRef.current = window.setInterval(() => {
+        let distStep = speed * dt;
+        let i = simSegIndexRef.current;
+        let u = simURef.current;
+        while (distStep > 0 && i < segLens.length) {
+          const L = Math.max(1e-6, segLens[i]);
+          const rem = (1 - u) * L;
+          if (distStep >= rem) {
+            // advance to next segment end
+            distStep -= rem;
+            u = 0;
+            i += 1;
+          } else {
+            u += distStep / L;
+            distStep = 0;
+          }
+        }
+        simSegIndexRef.current = i;
+        simURef.current = u;
+        if (i >= segLens.length) {
+          // reached end; push final point once and stop
+          setLivePath((prev) => {
+            const end = plannedPath[plannedPath.length - 1];
+            if (prev.length && prev[prev.length - 1][0] === end[0] && prev[prev.length - 1][1] === end[1] && prev[prev.length - 1][2] === end[2]) return prev;
+            const next = prev.length >= tailLimit ? prev.slice(prev.length - tailLimit + 1) : prev.slice();
+            next.push(end);
+            return next;
+          });
+          if (simTimerRef.current) { window.clearInterval(simTimerRef.current); simTimerRef.current = null; }
+          return;
+        }
+        const a = plannedPath[i];
+        const b = plannedPath[i + 1];
+        const x = a[0] + (b[0] - a[0]) * u;
+        const y = a[1] + (b[1] - a[1]) * u;
+        const z = a[2] + (b[2] - a[2]) * u;
+        setLivePath((prev) => {
+          const next = prev.length >= tailLimit ? prev.slice(prev.length - tailLimit + 1) : prev.slice();
+          next.push([x, y, z]);
+          return next;
+        });
+      }, 100);
+    } else {
+      // fallback circle demo
+      let t = 0;
+      simTimerRef.current = window.setInterval(() => {
+        t += 0.1;
+        const r = 1.5;
+        const x = Math.cos(t) * r;
+        const y = Math.sin(t) * r;
+        const z = Math.sin(t * 0.5) * 0.5;
+        setLivePath((prev) => {
+          const next = prev.length >= tailLimit ? prev.slice(prev.length - tailLimit + 1) : prev.slice();
+          next.push([x,y,z]);
+          return next;
+        });
+      }, 100);
+    }
+    return () => { if (simTimerRef.current) { window.clearInterval(simTimerRef.current); simTimerRef.current = null; } };
+  }, [simulateLive, tailLimit, plannedPath]);
   // no annotations handlers
 
   const onDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -74,6 +177,98 @@ export default function PCDViewer() {
                 <TooltipContent>清除</TooltipContent>
               </Tooltip>
             </TooltipProvider>
+          </div>
+        </div>
+
+        <Separator />
+        <div className="space-y-2">
+          <Label>规划轨迹（JSON/CSV，x,y,z[,t]）</Label>
+          <Input type="file" accept=".json,.csv" onChange={async (e) => {
+            const f = e.target.files?.[0];
+            if (!f) return;
+            const text = await f.text();
+            try {
+              let pts: [number, number, number][] = [];
+              if (f.name.endsWith('.json')) {
+                const obj = JSON.parse(text);
+                const arr = Array.isArray(obj?.points) ? obj.points : (Array.isArray(obj) ? obj : []);
+                pts = (arr as unknown[])
+                  .map((p) => {
+                    const rec = p as Record<string, unknown>;
+                    const x = Number(rec.x);
+                    const y = Number(rec.y);
+                    const z = Number(rec.z);
+                    return [x, y, z] as [number, number, number];
+                  })
+                  .filter((p) => p.every(Number.isFinite));
+              } else {
+                // very small CSV parser: expects header with x,y,z or time,x,y,z
+                const lines = text.split(/\r?\n/).filter(Boolean);
+                const header = lines.shift()?.split(/,|\t|;|\s+/) ?? [];
+                const xi = header.findIndex((h) => /^(x)$/i.test(h));
+                const yi = header.findIndex((h) => /^(y)$/i.test(h));
+                const zi = header.findIndex((h) => /^(z)$/i.test(h));
+                if (xi < 0 || yi < 0 || zi < 0) throw new Error('CSV 需要包含 x,y,z 列');
+                for (const line of lines) {
+                  const cols = line.split(/,|\t|;|\s+/);
+                  const x = Number(cols[xi]);
+                  const y = Number(cols[yi]);
+                  const z = Number(cols[zi]);
+                  if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) pts.push([x,y,z]);
+                }
+              }
+              setPlannedPath(pts);
+            } catch (err) {
+              alert('规划轨迹解析失败');
+            }
+          }} />
+          <div className="flex items-center gap-2">
+            <Switch checked={showPlanned} onCheckedChange={setShowPlanned} id="showPlanned" />
+            <Label htmlFor="showPlanned">显示规划轨迹</Label>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label>实时轨迹（WebSocket）</Label>
+          <div className="flex gap-2">
+            <Input value={wsUrl} onChange={(e) => setWsUrl(e.target.value)} disabled={simulateLive} />
+            <Button disabled={simulateLive} onClick={() => {
+              try {
+                wsRef.current?.close();
+              } catch {}
+              const ws = new WebSocket(wsUrl);
+              wsRef.current = ws;
+              ws.onopen = () => {/* no-op */};
+              ws.onmessage = (ev) => {
+                try {
+                  const d = JSON.parse(ev.data);
+                  const x = Number(d.x), y = Number(d.y), z = Number(d.z);
+                  if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+                    setLivePath((prev) => {
+                      const next = prev.length >= tailLimit ? prev.slice(prev.length - tailLimit + 1) : prev.slice();
+                      next.push([x,y,z]);
+                      return next;
+                    });
+                  }
+                } catch {}
+              };
+              ws.onerror = () => { /* ignore for now */ };
+              ws.onclose = () => { /* disconnected */ };
+            }}>连接</Button>
+            <Button variant="outline" disabled={simulateLive} onClick={() => { wsRef.current?.close(); wsRef.current = null; }}>断开</Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch checked={showLive} onCheckedChange={setShowLive} id="showLive" />
+            <Label htmlFor="showLive">显示实时轨迹</Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch checked={simulateLive} onCheckedChange={setSimulateLive} id="simulateLive" />
+            <Label htmlFor="simulateLive">前端模拟轨迹</Label>
+          </div>
+          <div className="space-y-1">
+            <Label>尾迹长度（点数）</Label>
+            <Slider value={[tailLimit]} min={100} max={20000} step={100} onValueChange={(v) => setTailLimit(v[0] ?? 5000)} />
+            <div className="text-xs text-muted-foreground">{tailLimit}</div>
           </div>
         </div>
 
@@ -189,6 +384,12 @@ export default function PCDViewer() {
             autoFit={autoFit}
             colorMode={colorMode}
             showPerf={showPerf}
+            plannedPath={plannedPath}
+            livePath={livePath}
+            showPlanned={showPlanned}
+            showLive={showLive}
+            plannedColor={plannedColor}
+            liveColor={liveColor}
             onLoadedAction={({ bbox, count }) => {
               setCount(count);
               setBbox({
