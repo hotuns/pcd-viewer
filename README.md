@@ -1,21 +1,18 @@
-## PCD Viewer v0.1
+## UAV Mission Manager v0.2
 
-一个基于 Next.js + three.js (@react-three/fiber, @react-three/drei) 的点云（PCD）查看与轨迹演示小工具，深色专业主题。
+一个基于 Next.js + three.js (@react-three/fiber, @react-three/drei) 的无人机任务管理小工具，支持创建任务并加载场景点云，同时通过 roslibjs 订阅无人机实时位置，采用深色专业主题。
 
 ### 功能概览
 
-- 加载点云
-	- 本地上传 .pcd 文件或输入 URL 加载
-	- 自动视角适配（fit to view）、点大小调节、网格/坐标轴开关
-	- 点云着色模式：原始色、按高度、按强度、按分类
-- 轨迹展示（本地坐标系）
-	- 规划轨迹：加载 JSON/CSV 的 XYZ 路径并以折线展示
-	- 实时轨迹：可通过前端模拟“沿规划路径飞行”，并绘制尾迹
-	- 无人机可视化：机体标记、可选航空姿态（转弯滚转效果）、速度箭头、面包屑尾迹（高效 Instances）
-- 性能辅助
-	- 可选 Stats HUD + Renderer 信息面板
+- 任务管理
+	- 创建任务；为任务配置场景（点云 .pcd）与航线轨迹（JSON/CSV或URL）
+	- 场景支持本地文件或 URL；加载后自动视角适配（fit to view）
+- ROS 实时位置
+	- 通过 roslibjs 连接 ROSBridge（如 ws://host:port）
+	- 订阅 /mavros/local_position/odom，显示实时位置与速度信息
+	- 仅显示实时数据，不在三维视图中绘制航迹
 
-注：为保障性能，已移除标绘/测量等重型交互。
+注：为对齐新目标，已移除轨迹显示、模拟回放、着色模式与性能面板等扩展功能，仅保留任务与实时位置。
 
 ### 运行
 
@@ -27,32 +24,26 @@ npm run dev
 
 ### 使用
 
-1) 点云
-- 通过「选择文件」或输入 URL 加载 .pcd 文件。
-- 在侧边栏可切换着色模式（原始/高度/强度/分类）、调整点大小、开关网格与坐标轴。
+1) 创建任务
+- 在侧栏创建任务并选择：
+	- 场景（点云 .pcd）：上传文件或填写 URL
+	- 航线轨迹：上传 JSON/CSV 或填写 URL（当前不绘制，仅保存）
 
-2) 轨迹
-- 规划轨迹：在侧边栏加载 JSON 或 CSV（字段：x,y,z[,t]）。示例见 `public/example-planned-path.json`。
-- 实时轨迹：默认使用前端模拟，沿规划路径重放，便于对齐对比；也保留 WebSocket 接入的扩展位（未默认启用）。
-- 无人机标记：支持航空姿态（转弯滚转）、速度箭头与面包屑尾迹。
+2) ROS 实时位置
+- 在侧栏填写 ROSBridge 地址（如 ws://101.132.193.179:7001），点击连接
+- 点击「开始任务」后，将通过 roslibjs 订阅 /mavros/local_position/odom 并在侧栏显示实时坐标与速度
 
 ### 文件结构（关键）
 
-- `src/components/pcd/PCDCanvas.tsx`：3D 场景（点云、着色、轨迹、UAV 可视化、性能 HUD）
-- `src/components/pcd/PCDViewer.tsx`：UI 与状态（加载、模式切换、轨迹管理、前端模拟）
-- `src/app/api/telemetry/ws/route.ts`：Edge Runtime WebSocket 路由（保留可选）
-- `public/example-planned-path.json`：示例规划轨迹
+- `src/components/pcd/PCDCanvas.tsx`：3D 场景（点云加载 + 视角适配 + 基本显示）
+- `src/components/pcd/MissionController.tsx`：任务创建/选择、ROS 连接与实时位置订阅、基本显示设置
+- `src/components/mission/MissionManager.tsx`：任务增删改与资源（场景/航线）配置
+- `src/app/page.tsx`：首页入口
 
-### 已知限制（v0.1）
+### 已知限制（v0.2）
 
-- 以性能为先：无标绘/测量等重交互工具
-- 强度/高度着色为“当前数据自适应归一化”，跨数据集对比需谨慎；可后续支持固定阈值
-- WebSocket 实时数据管道留有接口，但默认关闭；当前以纯前端定时器模拟为主
+- 当前不绘制航迹，仅显示实时位置数据
 - PCD 二进制格式兼容性依赖 three.js 的 PCDLoader，不同导出器可能存在差异（建议优先 ASCII）
+- ROS 话题与消息类型需按实际环境调整（默认 /mavros/local_position/odom, nav_msgs/msg/Odometry）
 
-### 路线图（后续）
-
-- UI 开关与参数：航空姿态、速度箭头、面包屑数量/长度、模拟速度与循环模式
-- 可选固定色阶（强度/高度）与 LUT 配置
-- 更多性能选项（DPR、LOD、点大小随距调整等）
 
