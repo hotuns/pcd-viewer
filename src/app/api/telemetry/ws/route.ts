@@ -7,7 +7,10 @@ declare const WebSocketPair: {
 
 export const runtime = "edge";
 
-function toStream(controller: ReadableStreamDefaultController, simulate = false) {
+function toStream(
+  controller: ReadableStreamDefaultController,
+  simulate = false
+) {
   let timer: number | undefined;
   if (simulate) {
     let t = 0;
@@ -18,7 +21,11 @@ function toStream(controller: ReadableStreamDefaultController, simulate = false)
       const x = Math.cos(t) * r;
       const y = Math.sin(t) * r;
       const z = Math.sin(t * 0.5) * 0.5;
-      controller.enqueue(new TextEncoder().encode(JSON.stringify({ x, y, z, t: Date.now() }) + "\n"));
+      controller.enqueue(
+        new TextEncoder().encode(
+          JSON.stringify({ x, y, z, t: Date.now() }) + "\n"
+        )
+      );
     }, 100);
   }
   return () => {
@@ -49,7 +56,9 @@ export async function GET(req: NextRequest) {
       start(controller) {
         cleanup = toStream(controller, true);
       },
-      cancel() { cleanup?.(); }
+      cancel() {
+        cleanup?.();
+      },
     });
     const reader = stream.getReader();
     (async () => {
@@ -72,8 +81,8 @@ export async function GET(req: NextRequest) {
   });
   server.addEventListener("close", () => cleanup?.());
 
-  return new Response(null, ({
+  return new Response(null, {
     status: 101,
     webSocket: client,
-  } as unknown) as ResponseInit);
+  } as unknown as ResponseInit);
 }

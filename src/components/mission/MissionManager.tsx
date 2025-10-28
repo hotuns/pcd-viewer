@@ -13,7 +13,10 @@ interface MissionManagerProps {
   selectedMission: Mission | null;
 }
 
-export default function MissionManager({ onMissionSelect, selectedMission }: MissionManagerProps) {
+export default function MissionManager({
+  onMissionSelect,
+  selectedMission,
+}: MissionManagerProps) {
   const [missions, setMissions] = useState<Mission[]>([]);
   const [newMissionName, setNewMissionName] = useState("");
 
@@ -33,7 +36,7 @@ export default function MissionManager({ onMissionSelect, selectedMission }: Mis
   };
 
   const deleteMission = (id: string) => {
-    setMissions(missions.filter(m => m.id !== id));
+    setMissions(missions.filter((m) => m.id !== id));
     if (selectedMission?.id === id) {
       onMissionSelect(null);
     }
@@ -41,36 +44,56 @@ export default function MissionManager({ onMissionSelect, selectedMission }: Mis
 
   const updateMissionScene = (file: File) => {
     if (!selectedMission) return;
-    const updated = { ...selectedMission, scene: { type: "file" as const, file } };
-    setMissions(missions.map(m => m.id === selectedMission.id ? updated : m));
+    const updated = {
+      ...selectedMission,
+      scene: { type: "file" as const, file },
+    };
+    setMissions(
+      missions.map((m) => (m.id === selectedMission.id ? updated : m))
+    );
     onMissionSelect(updated);
   };
 
   const updateMissionSceneURL = (url: string) => {
     if (!selectedMission || !url) return;
-    const updated = { ...selectedMission, scene: { type: "url" as const, url } };
-    setMissions(missions.map(m => m.id === selectedMission.id ? updated : m));
+    const updated = {
+      ...selectedMission,
+      scene: { type: "url" as const, url },
+    };
+    setMissions(
+      missions.map((m) => (m.id === selectedMission.id ? updated : m))
+    );
     onMissionSelect(updated);
   };
 
   const updateMissionTrajectory = (file: File) => {
     if (!selectedMission) return;
-    const updated = { ...selectedMission, trajectory: { type: "file" as const, file } };
-    setMissions(missions.map(m => m.id === selectedMission.id ? updated : m));
+    const updated = {
+      ...selectedMission,
+      trajectory: { type: "file" as const, file },
+    };
+    setMissions(
+      missions.map((m) => (m.id === selectedMission.id ? updated : m))
+    );
     onMissionSelect(updated);
   };
 
   const updateMissionTrajectoryURL = (url: string) => {
     if (!selectedMission || !url) return;
-    const updated = { ...selectedMission, trajectory: { type: "url" as const, url } };
-    setMissions(missions.map(m => m.id === selectedMission.id ? updated : m));
+    const updated = {
+      ...selectedMission,
+      trajectory: { type: "url" as const, url },
+    };
+    setMissions(
+      missions.map((m) => (m.id === selectedMission.id ? updated : m))
+    );
     onMissionSelect(updated);
   };
 
   return (
     <div className="space-y-4">
       <h2 className="text-lg font-semibold">任务管理</h2>
-      
+
       {/* 创建新任务 */}
       <div className="space-y-2">
         <Label>创建新任务</Label>
@@ -96,7 +119,7 @@ export default function MissionManager({ onMissionSelect, selectedMission }: Mis
           <div className="text-sm text-muted-foreground">暂无任务</div>
         ) : (
           <div className="space-y-1">
-            {missions.map(mission => (
+            {missions.map((mission) => (
               <div
                 key={mission.id}
                 className={`flex items-center justify-between p-2 rounded border cursor-pointer transition-colors ${
@@ -109,7 +132,8 @@ export default function MissionManager({ onMissionSelect, selectedMission }: Mis
                 <div className="flex-1">
                   <div className="text-sm font-medium">{mission.name}</div>
                   <div className="text-xs text-muted-foreground">
-                    {mission.scene ? "✓ 场景" : "✗ 场景"} | {mission.trajectory ? "✓ 航线" : "✗ 航线"}
+                    {mission.scene ? "✓ 场景" : "✗ 场景"} |{" "}
+                    {mission.trajectory ? "✓ 航线" : "✗ 航线"}
                   </div>
                 </div>
                 <Button
@@ -134,7 +158,7 @@ export default function MissionManager({ onMissionSelect, selectedMission }: Mis
       {selectedMission && (
         <div className="space-y-3">
           <Label>配置任务: {selectedMission.name}</Label>
-          
+
           {/* 场景（点云）配置 */}
           <div className="space-y-2">
             <Label className="text-sm">场景（点云文件）</Label>
@@ -154,8 +178,9 @@ export default function MissionManager({ onMissionSelect, selectedMission }: Mis
             </div>
             {selectedMission.scene && (
               <div className="text-xs text-muted-foreground">
-                ✓ {selectedMission.scene.type === "file" 
-                  ? selectedMission.scene.file.name 
+                ✓{" "}
+                {selectedMission.scene.type === "file"
+                  ? selectedMission.scene.file.name
                   : selectedMission.scene.url}
               </div>
             )}
@@ -180,8 +205,9 @@ export default function MissionManager({ onMissionSelect, selectedMission }: Mis
             </div>
             {selectedMission.trajectory && (
               <div className="text-xs text-muted-foreground">
-                ✓ {selectedMission.trajectory.type === "file" 
-                  ? selectedMission.trajectory.file.name 
+                ✓{" "}
+                {selectedMission.trajectory.type === "file"
+                  ? selectedMission.trajectory.file.name
                   : selectedMission.trajectory.url}
               </div>
             )}

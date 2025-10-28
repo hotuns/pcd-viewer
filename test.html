@@ -1,65 +1,84 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Drone Position Monitor</title>
-    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.js"></script>
-</head>
-<body>
+    <script
+      type="text/javascript"
+      src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.js"
+    ></script>
+  </head>
+  <body>
     <h1>Drone Position Monitor</h1>
-    
-    <p>Connection: <span id="status" style="font-weight: bold;">N/A</span></p>
-    
+
+    <p>Connection: <span id="status" style="font-weight: bold">N/A</span></p>
+
     <h3>Drone Odometry Data:</h3>
-    <pre id="drone-data" style="background: #f5f5f5; padding: 15px; border-radius: 5px; font-family: monospace;">
+    <pre
+      id="drone-data"
+      style="
+        background: #f5f5f5;
+        padding: 15px;
+        border-radius: 5px;
+        font-family: monospace;
+      "
+    >
 Waiting for data...
     </pre>
 
     <h3>Livox Mid-360 Point Cloud Stats:</h3>
-    <pre id="pointcloud-stats" style="background: #e8f4f8; padding: 15px; border-radius: 5px; font-family: monospace;">
+    <pre
+      id="pointcloud-stats"
+      style="
+        background: #e8f4f8;
+        padding: 15px;
+        border-radius: 5px;
+        font-family: monospace;
+      "
+    >
 Waiting for point cloud data...
     </pre>
 
     <script type="text/javascript">
-        // Connect to ROS
-        const ros = new ROSLIB.Ros({
-            url: "ws://101.132.193.179:7001"
-        });
+      // Connect to ROS
+      const ros = new ROSLIB.Ros({
+        url: "ws://101.132.193.179:7001",
+      });
 
-        ros.on('connection', () => {
-            document.getElementById('status').innerHTML = "Connected";
-            console.log('Connected to ROS bridge');
-        });
+      ros.on("connection", () => {
+        document.getElementById("status").innerHTML = "Connected";
+        console.log("Connected to ROS bridge");
+      });
 
-        ros.on('error', (error) => {
-            document.getElementById('status').innerHTML = "Error: " + error;
-            console.log('ROS connection error:', error);
-        });
+      ros.on("error", (error) => {
+        document.getElementById("status").innerHTML = "Error: " + error;
+        console.log("ROS connection error:", error);
+      });
 
-        ros.on('close', () => {
-            document.getElementById('status').innerHTML = "Disconnected";
-            console.log('ROS connection closed');
-        });
+      ros.on("close", () => {
+        document.getElementById("status").innerHTML = "Disconnected";
+        console.log("ROS connection closed");
+      });
 
-        // Subscribe to drone odometry
-        const droneOdomTopic = new ROSLIB.Topic({
-            ros: ros,
-            name: '/mavros/local_position/odom',
-            messageType: 'nav_msgs/msg/Odometry'
-        });
+      // Subscribe to drone odometry
+      const droneOdomTopic = new ROSLIB.Topic({
+        ros: ros,
+        name: "/mavros/local_position/odom",
+        messageType: "nav_msgs/msg/Odometry",
+      });
 
-        droneOdomTopic.subscribe((msg) => {
-            console.log('Received drone odom:', msg);
-            
-            // Extract position and orientation
-            const pos = msg.pose.pose.position;
-            const orient = msg.pose.pose.orientation;
-            const vel = msg.twist.twist.linear;
-            const angular_vel = msg.twist.twist.angular;
+      droneOdomTopic.subscribe((msg) => {
+        console.log("Received drone odom:", msg);
 
-            // Format data for display
-            const displayData = `
+        // Extract position and orientation
+        const pos = msg.pose.pose.position;
+        const orient = msg.pose.pose.orientation;
+        const vel = msg.twist.twist.linear;
+        const angular_vel = msg.twist.twist.angular;
+
+        // Format data for display
+        const displayData = `
 时间戳: ${new Date().toLocaleTimeString()}
 Header Frame: ${msg.header.frame_id}
 Child Frame: ${msg.child_frame_id}
@@ -86,31 +105,33 @@ Child Frame: ${msg.child_frame_id}
   Z: ${angular_vel.z.toFixed(3)} rad/s
             `;
 
-            document.getElementById('drone-data').textContent = displayData;
-        });
+        document.getElementById("drone-data").textContent = displayData;
+      });
 
-        console.log('Subscribing to /mavros/local_position/odom');
+      console.log("Subscribing to /mavros/local_position/odom");
 
-        // Subscribe to Livox Mid-360 point cloud
-        const pointCloudTopic = new ROSLIB.Topic({
-            ros: ros,
-            name: '/lidar/point_cloud',  // 常见的 Livox 话题名，可能需要根据实际情况调整
-            messageType: 'sensor_msgs/PointCloud2'
-        });
+      // Subscribe to Livox Mid-360 point cloud
+      const pointCloudTopic = new ROSLIB.Topic({
+        ros: ros,
+        name: "/lidar/point_cloud", // 常见的 Livox 话题名，可能需要根据实际情况调整
+        messageType: "sensor_msgs/PointCloud2",
+      });
 
-        pointCloudTopic.subscribe((msg) => {
-            console.log('Received point cloud:', msg);
-            
-            // 计算点云统计信息
-            const pointCount = msg.width * msg.height;
-            const dataSize = msg.data.length;
-            const bytesPerPoint = pointCount > 0 ? (dataSize / pointCount) : 0;
-            
-            // 从 fields 中获取字段信息
-            const fields = msg.fields.map(field => `${field.name} (${field.datatype})`).join(', ');
-            
-            // 格式化统计信息显示
-            const statsData = `
+      pointCloudTopic.subscribe((msg) => {
+        console.log("Received point cloud:", msg);
+
+        // 计算点云统计信息
+        const pointCount = msg.width * msg.height;
+        const dataSize = msg.data.length;
+        const bytesPerPoint = pointCount > 0 ? dataSize / pointCount : 0;
+
+        // 从 fields 中获取字段信息
+        const fields = msg.fields
+          .map((field) => `${field.name} (${field.datatype})`)
+          .join(", ");
+
+        // 格式化统计信息显示
+        const statsData = `
 时间戳: ${new Date().toLocaleTimeString()}
 Frame ID: ${msg.header.frame_id}
 序列号: ${msg.header.stamp.sec}.${msg.header.stamp.nanosec}
@@ -126,16 +147,25 @@ Frame ID: ${msg.header.frame_id}
   ${fields}
 
 数据属性:
-  是否有序: ${msg.is_bigendian ? '大端序' : '小端序'}  
+  是否有序: ${msg.is_bigendian ? "大端序" : "小端序"}  
   点步长: ${msg.point_step} bytes
   行步长: ${msg.row_step} bytes
-  是否稠密: ${msg.is_dense ? '是' : '否'}
+  是否稠密: ${msg.is_dense ? "是" : "否"}
             `;
 
-            document.getElementById('pointcloud-stats').textContent = statsData;
-        });
+        document.getElementById("pointcloud-stats").textContent = statsData;
+      });
 
-        console.log('Subscribing to /livox/lidar point cloud');
+      console.log("Subscribing to /livox/lidar point cloud");
+
+      const mapTopic = new ROSLIB.Topic({
+        ros: ros,
+        name: "/drone_0_grid/grid_map/occupancy_inflate",
+        messageType: "sensor_msgs/PointCloud2",
+      });
+      mapTopic.subscribe((msg) => {
+        console.log("Received map", msg);
+      });
     </script>
-</body>
+  </body>
 </html>
