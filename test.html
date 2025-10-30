@@ -24,7 +24,7 @@ Waiting for point cloud data...
     <script type="text/javascript">
         // Connect to ROS
         const ros = new ROSLIB.Ros({
-            url: "ws://101.132.193.179:7001"
+            url: "ws://192.168.203.30:9999"
         });
 
         ros.on('connection', () => {
@@ -43,21 +43,19 @@ Waiting for point cloud data...
         });
 
         // Subscribe to drone odometry
+        // 修改为：geometry postampd的类型的msg
         const droneOdomTopic = new ROSLIB.Topic({
             ros: ros,
-            name: '/mavros/local_position/odom',
-            messageType: 'nav_msgs/msg/Odometry'
+            name: '/odom_visualization/pose',
+            messageType: 'geometry_msgs/PoseStamped'
         });
-
+        // 修改对应的解析方式
         droneOdomTopic.subscribe((msg) => {
             console.log('Received drone odom:', msg);
             
             // Extract position and orientation
-            const pos = msg.pose.pose.position;
-            const orient = msg.pose.pose.orientation;
-            const vel = msg.twist.twist.linear;
-            const angular_vel = msg.twist.twist.angular;
-
+            const pos = msg.pose.position;
+            const orient = msg.pose.orientation;
             // Format data for display
             const displayData = `
 时间戳: ${new Date().toLocaleTimeString()}
@@ -68,22 +66,6 @@ Child Frame: ${msg.child_frame_id}
   X: ${pos.x.toFixed(3)} m
   Y: ${pos.y.toFixed(3)} m  
   Z: ${pos.z.toFixed(3)} m
-
-姿态 (Orientation - Quaternion):
-  X: ${orient.x.toFixed(3)}
-  Y: ${orient.y.toFixed(3)}
-  Z: ${orient.z.toFixed(3)}
-  W: ${orient.w.toFixed(3)}
-
-线速度 (Linear Velocity):
-  X: ${vel.x.toFixed(3)} m/s
-  Y: ${vel.y.toFixed(3)} m/s
-  Z: ${vel.z.toFixed(3)} m/s
-
-角速度 (Angular Velocity):
-  X: ${angular_vel.x.toFixed(3)} rad/s
-  Y: ${angular_vel.y.toFixed(3)} rad/s
-  Z: ${angular_vel.z.toFixed(3)} rad/s
             `;
 
             document.getElementById('drone-data').textContent = displayData;
@@ -94,7 +76,7 @@ Child Frame: ${msg.child_frame_id}
         // Subscribe to Livox Mid-360 point cloud
         const pointCloudTopic = new ROSLIB.Topic({
             ros: ros,
-            name: '/lidar/point_cloud',  // 常见的 Livox 话题名，可能需要根据实际情况调整
+            name: '/grid_map/occupancy_inflate',  // 常见的 Livox 话题名，可能需要根据实际情况调整
             messageType: 'sensor_msgs/PointCloud2'
         });
 
