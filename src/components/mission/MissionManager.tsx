@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Mission, Source } from "@/types/mission";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,8 +14,26 @@ interface MissionManagerProps {
 }
 
 export default function MissionManager({ onMissionSelect, selectedMission }: MissionManagerProps) {
-  const [missions, setMissions] = useState<Mission[]>([]);
+  const [missions, setMissions] = useState<Mission[]>([
+    {
+      id: "default",
+      name: "默认任务",
+      createdAt: new Date(),
+      scene: { type: "url", url: "/rosbag_play.pcd" },
+      trajectory: { type: "url", url: "/example-planned-path.json" },
+    },
+  ]);
   const [newMissionName, setNewMissionName] = useState("");
+  
+
+  // 首次加载时自动选中默认任务
+  useEffect(() => {
+    if (!selectedMission && missions.length > 0) {
+      onMissionSelect(missions[0]);
+    }
+  }, [selectedMission, missions, onMissionSelect]);
+
+  
 
   const createMission = () => {
     if (!newMissionName.trim()) {
@@ -109,7 +127,7 @@ export default function MissionManager({ onMissionSelect, selectedMission }: Mis
                 <div className="flex-1">
                   <div className="text-sm font-medium">{mission.name}</div>
                   <div className="text-xs text-muted-foreground">
-                    {mission.scene ? "✓ 场景" : "✗ 场景"} | {mission.trajectory ? "✓ 航线" : "✗ 航线"}
+                    {mission.scene ? "✓ 场景" : "✗ 场景"} | {mission.trajectory ? "✓ 规划航线" : "✗ 规划航线"}
                   </div>
                 </div>
                 <Button
@@ -130,64 +148,132 @@ export default function MissionManager({ onMissionSelect, selectedMission }: Mis
 
       <Separator />
 
-      {/* 当前任务配置 */}
+      {/* 当前任务配置（精简版） */}
       {selectedMission && (
-        <div className="space-y-3">
-          <Label>配置任务: {selectedMission.name}</Label>
-          
-          {/* 场景（点云）配置 */}
-          <div className="space-y-2">
-            <Label className="text-sm">场景（点云文件）</Label>
-            <Input
-              type="file"
-              accept=".pcd"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) updateMissionScene(file);
-              }}
-            />
-            <div className="flex gap-2">
-              <Input
-                placeholder="或输入 URL"
-                onBlur={(e) => updateMissionSceneURL(e.target.value)}
-              />
-            </div>
-            {selectedMission.scene && (
-              <div className="text-xs text-muted-foreground">
-                ✓ {selectedMission.scene.type === "file" 
-                  ? selectedMission.scene.file.name 
-                  : selectedMission.scene.url}
-              </div>
-            )}
-          </div>
-
-          {/* 航线轨迹配置 */}
-          <div className="space-y-2">
-            <Label className="text-sm">航线轨迹（JSON/CSV）</Label>
-            <Input
-              type="file"
-              accept=".json,.csv"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) updateMissionTrajectory(file);
-              }}
-            />
-            <div className="flex gap-2">
-              <Input
-                placeholder="或输入 URL"
-                onBlur={(e) => updateMissionTrajectoryURL(e.target.value)}
-              />
-            </div>
-            {selectedMission.trajectory && (
-              <div className="text-xs text-muted-foreground">
-                ✓ {selectedMission.trajectory.type === "file" 
-                  ? selectedMission.trajectory.file.name 
-                  : selectedMission.trajectory.url}
-              </div>
-            )}
-          </div>
-        </div>
+        <CompactConfig
+          mission={selectedMission as Mission}
+          onSceneFile={updateMissionScene}
+          onSceneURL={updateMissionSceneURL}
+          onSceneClear={() => {
+            const { scene: _omit, ...rest } = selectedMission as Mission & { scene?: Mission["scene"] };
+            const updated: Mission = { ...rest };
+            setMissions(missions.map(m => m.id === selectedMission!.id ? updated : m));
+            onMissionSelect(updated);
+          }}
+          onTrajFile={updateMissionTrajectory}
+          onTrajURL={updateMissionTrajectoryURL}
+          onTrajClear={() => {
+            const { trajectory: _omit, ...rest } = selectedMission as Mission & { trajectory?: Mission["trajectory"] };
+            const updated: Mission = { ...rest };
+            setMissions(missions.map(m => m.id === selectedMission!.id ? updated : m));
+            onMissionSelect(updated);
+          }}
+        />
       )}
+    </div>
+  );
+}
+
+function CompactConfig({
+  mission,
+  onSceneFile,
+  onSceneURL,
+  onSceneClear,
+  onTrajFile,
+  onTrajURL,
+  onTrajClear,
+}: {
+  mission: Mission;
+  onSceneFile: (file: File) => void;
+  onSceneURL: (url: string) => void;
+  onSceneClear: () => void;
+  onTrajFile: (file: File) => void;
+  onTrajURL: (url: string) => void;
+  onTrajClear: () => void;
+}) {
+  const sceneInputRef = useRef<HTMLInputElement | null>(null);
+  const trajInputRef = useRef<HTMLInputElement | null>(null);
+
+  const summarize = (src: Mission["scene"] | Mission["trajectory"]) => {
+    if (!src) return "未设置";
+    if (src.type === "file") return src.file.name;
+    try {
+      const u = new URL(src.url, location.origin);
+      return u.pathname.split("/").pop() || src.url;
+    } catch {
+      return src.url;
+    }
+  };
+
+  const shortenMiddle = (text: string, max = 28) => {
+    if (text.length <= max) return text;
+    const keep = max - 3;
+    const head = Math.ceil(keep / 2);
+    const tail = Math.floor(keep / 2);
+    return `${text.slice(0, head)}...${text.slice(-tail)}`;
+  };
+
+  const askURL = async (title: string) => {
+    const url = prompt(title);
+    if (url && url.trim()) return url.trim();
+    return undefined;
+  };
+
+  return (
+    <div className="space-y-3">
+      <Label>配置任务: {mission.name}</Label>
+
+      {/* 场景行 */}
+      <div className="flex items-center justify-between gap-2 text-sm">
+        <div className="min-w-0 flex-1">
+          <span className="text-muted-foreground mr-2">场景</span>
+          <span
+            className="truncate inline-block max-w-[180px] sm:max-w-[220px] align-middle"
+            title={summarize(mission.scene)}
+          >
+            {shortenMiddle(summarize(mission.scene))}
+          </span>
+        </div>
+        <div className="flex gap-2">
+          <input ref={sceneInputRef} type="file" accept=".pcd" className="hidden" onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) onSceneFile(file);
+            if (sceneInputRef.current) sceneInputRef.current.value = "";
+          }} />
+          <Button size="sm" variant="outline" onClick={() => sceneInputRef.current?.click()}>文件</Button>
+          <Button size="sm" variant="outline" onClick={async () => {
+            const url = await askURL("输入点云 URL (.pcd)");
+            if (url) onSceneURL(url);
+          }}>URL</Button>
+          <Button size="sm" variant="ghost" onClick={onSceneClear}>清除</Button>
+        </div>
+      </div>
+
+      {/* 规划航线路 */}
+      <div className="flex items-center justify-between gap-2 text-sm">
+        <div className="min-w-0 flex-1">
+          <span className="text-muted-foreground mr-2">规划航线</span>
+          <span
+            className="truncate inline-block max-w-[180px] sm:max-w-[220px] align-middle"
+            title={summarize(mission.trajectory)}
+          >
+            {shortenMiddle(summarize(mission.trajectory))}
+          </span>
+        </div>
+        <div className="flex gap-2">
+          <input ref={trajInputRef} type="file" accept=".json,.csv" className="hidden" onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) onTrajFile(file);
+            if (trajInputRef.current) trajInputRef.current.value = "";
+          }} />
+          <Button size="sm" variant="outline" onClick={() => trajInputRef.current?.click()}>文件</Button>
+          <Button size="sm" variant="outline" onClick={async () => {
+            const url = await askURL("输入航线 URL (.json/.csv)");
+            if (url) onTrajURL(url);
+          }}>URL</Button>
+          <Button size="sm" variant="ghost" onClick={onTrajClear}>清除</Button>
+        </div>
+      </div>
     </div>
   );
 }
