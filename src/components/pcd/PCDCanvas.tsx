@@ -1,12 +1,69 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, Suspense } from "react";
 import { Canvas, useThree, ThreeEvent } from "@react-three/fiber";
-import { Grid, OrbitControls, Line, Html } from "@react-three/drei";
+import { Grid, OrbitControls, Line, Html, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { PCDLoader } from "three/examples/jsm/loaders/PCDLoader.js";
-import type { Source } from "@/types/mission";
+import type { Source, DronePosition, Waypoint } from "@/types/mission";
+
+// 无人机GLTF模型组件
+function DroneModel({ position, orientation }: { position: [number, number, number]; orientation?: { x: number; y: number; z: number; w: number } }) {
+  const { scene, materials } = useGLTF('/drone/scene.gltf');
+  
+  // 克隆场景并确保材质正确
+  const clonedScene = scene.clone();
+  
+  // 遍历所有材质，确保它们能正确渲染
+  clonedScene.traverse((child) => {
+    if (child instanceof THREE.Mesh && child.material) {
+      // 如果是标准材质
+      if (child.material instanceof THREE.MeshStandardMaterial) {
+        child.material.needsUpdate = true;
+        
+        // 调试：检查纹理是否正确加载
+        if (child.material.map) {
+          console.log('Base color texture found:', child.material.map);
+        }
+        if (child.material.emissiveMap) {
+          console.log('Emissive texture found:', child.material.emissiveMap);
+        }
+        
+        // 提升材质亮度，确保可见
+        child.material.toneMapped = false;
+        
+        // 如果有发光贴图，增强发光强度
+        if (child.material.emissiveMap) {
+          child.material.emissiveIntensity = 2.5;
+        }
+      }
+      
+      // 确保网格可以投射和接收阴影
+      child.castShadow = true;
+      child.receiveShadow = true;
+    }
+  });
+  
+  return (
+    <group 
+      position={position}
+      quaternion={orientation ? [
+        orientation.x,
+        orientation.y,
+        orientation.z,
+        orientation.w
+      ] : undefined}
+      scale={[0.2, 0.2, 0.2]} // 调整缩放到更合适的大小
+      rotation={[0, 0, 0]} // 如果需要，可以调整默认旋转
+    >
+      <primitive object={clonedScene} />
+    </group>
+  );
+}
+
+// 预加载GLTF模型
+useGLTF.preload('/drone/scene.gltf');
 
 export type PCDCanvasHandle = {
   fitToView: () => void;
@@ -28,6 +85,9 @@ export type PCDCanvasProps = {
   plannedPathEditable?: boolean; // 是否支持在 3D 中拖拽编辑
   onPlannedPointsChange?: (points: Array<{ x: number; y: number; z: number }>) => void; // 拖拽时回传
   plannedDragPlane?: 'xy' | 'xz' | 'yz'; // 拖拽所用平面
+  dronePosition?: DronePosition | null; // 无人机位置和姿态
+  waypoints?: Waypoint[]; // 航点状态信息
+  currentWaypointIndex?: number; // 当前目标航点
 };
 
 function SceneFitter({
@@ -124,7 +184,7 @@ function CameraOrienter({
 }
 
 export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PCDCanvas(
-  { source, pointSize = 0.01, showGrid = true, showAxes = true, colorMode = "none", roundPoints = true, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathEditable = false, onPlannedPointsChange, plannedDragPlane = 'xy' },
+  { source, pointSize = 0.01, showGrid = true, showAxes = true, colorMode = "none", roundPoints = true, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathEditable = false, onPlannedPointsChange, plannedDragPlane = 'xy', dronePosition, waypoints, currentWaypointIndex },
   ref
 ) {
   const [geom, setGeom] = useState<THREE.BufferGeometry | null>(null);
@@ -336,10 +396,21 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      <Canvas camera={{ position: [2, 2, 2], fov: 60 }} dpr={[1, 2]}>
+      <Canvas 
+        camera={{ position: [2, 2, 2], fov: 60 }} 
+        dpr={[1, 2]}
+        gl={{ 
+          toneMapping: THREE.ACESFilmicToneMapping,
+          toneMappingExposure: 1.5,
+          outputColorSpace: THREE.SRGBColorSpace
+        }}
+      >
         <color attach="background" args={["#111214"]} />
-        <ambientLight intensity={0.5} />
-        <directionalLight position={[5, 5, 5]} intensity={0.8} />
+        <ambientLight intensity={1.0} />
+        <directionalLight position={[5, 5, 5]} intensity={1.5} />
+        <directionalLight position={[-5, -5, 5]} intensity={0.8} />
+        <pointLight position={[0, 0, 10]} intensity={0.8} />
+        <hemisphereLight args={["#ffffff", "#444444", 0.6]} />
         {showGrid && (
           <Grid args={[10, 10]} cellColor="#2a2a2a" sectionColor="#3a3a3a" infiniteGrid />
         )}
@@ -391,7 +462,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
               }
             }}
           >
-            {/* 折线 */}
+            {/* 折线（全路径）*/}
             <Line
               points={plannedPathPoints.map(p => [p.x, p.y, p.z]) as [number, number, number][]}
               color="#2dd4bf"
@@ -401,59 +472,106 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
               opacity={0.9}
               transparent
             />
+            {/* 已完成路径段：起点 -> 最后一个 completed 航点（叠加更醒目的绿色）*/}
+            {(() => {
+              if (!Array.isArray(waypoints) || waypoints.length === 0) return null;
+              // 取最大 completed 索引
+              const lastCompleted = waypoints.reduce((m, w) => (w.status === 'completed' ? Math.max(m, w.index ?? 0) : m), -1);
+              const endIdx = Math.min(lastCompleted, plannedPathPoints.length - 1);
+              if (endIdx >= 1) {
+                const pts = plannedPathPoints.slice(0, endIdx + 1).map(p => [p.x, p.y, p.z]) as [number, number, number][];
+                return (
+                  <Line
+                    points={pts}
+                    color="#22c55e"
+                    lineWidth={3}
+                    dashed={false}
+                    depthTest
+                    opacity={1}
+                    transparent={false}
+                  />
+                );
+              }
+              return null;
+            })()}
             {/* 航点 */}
-            {plannedPathPoints.map((p, i) => (
-              <mesh
-                key={i}
-                position={[p.x, p.y, p.z] as [number, number, number]}
-                onDoubleClick={(e: ThreeEvent<MouseEvent>) => {
+            {plannedPathPoints.map((p, i) => {
+              // 获取航点状态和颜色
+              const waypoint = waypoints?.find(w => w.index === i);
+              const getWaypointColor = () => {
+                if (selectedIdx === i) return "#f59e0b"; // 选中时为橙色
+                
+                if (waypoint) {
+                  switch (waypoint.status) {
+                    case 'completed': return "#22c55e"; // 绿色 - 已完成
+                    case 'active': return "#f59e0b"; // 橙色 - 当前目标
+                    case 'pending': return "#60a5fa"; // 蓝色 - 待执行
+                    case 'skipped': return "#6b7280"; // 灰色 - 已跳过
+                  }
+                }
+                
+                // 默认颜色（编辑模式）
+                if (i === 0) return "#22c55e"; // 起点绿色
+                if (i === plannedPathPoints.length - 1) return "#ef4444"; // 终点红色
+                return "#60a5fa"; // 中间点蓝色
+              };
+              
+              const waypointColor = getWaypointColor();
+              const isActive = waypoint?.status === 'active' || currentWaypointIndex === i;
+              
+              return (
+                <mesh
+                  key={i}
+                  position={[p.x, p.y, p.z] as [number, number, number]}
+                  onDoubleClick={(e: ThreeEvent<MouseEvent>) => {
+                    if (!plannedPathEditable) return;
+                    e.stopPropagation();
+                    // 双击当前小球：若已选中则取消选中；否则选中
+                    setSelectedIdx(prev => (prev === i ? null : i));
+                    // 结束可能的拖拽
+                    draggingIdx.current = null; dragPlane.current = null; fixedVal.current = 0;
+                    if (controlsRef.current) controlsRef.current.enabled = true;
+                  }}
+                  onPointerDown={(e: ThreeEvent<PointerEvent>) => {
                   if (!plannedPathEditable) return;
+                    // 仅左键参与拖拽/删除；右键留给相机
+                    if (e.button !== 0) return;
+                  if (e.altKey) {
+                    // Alt+Click 删除该点
+                    e.stopPropagation();
+                    const next = plannedPathPoints.slice();
+                    next.splice(i, 1);
+                    onPlannedPointsChangeRef.current?.(next);
+                    return;
+                  }
+                  // 只有已双击选中的点，才能开始拖拽
+                  if (selectedIdx !== i) return;
+                  // 开始拖拽
                   e.stopPropagation();
-                  // 双击当前小球：若已选中则取消选中；否则选中
-                  setSelectedIdx(prev => (prev === i ? null : i));
-                  // 结束可能的拖拽
-                  draggingIdx.current = null; dragPlane.current = null; fixedVal.current = 0;
-                  if (controlsRef.current) controlsRef.current.enabled = true;
-                }}
-                onPointerDown={(e: ThreeEvent<PointerEvent>) => {
-                if (!plannedPathEditable) return;
-                  // 仅左键参与拖拽/删除；右键留给相机
-                  if (e.button !== 0) return;
-                if (e.altKey) {
-                  // Alt+Click 删除该点
-                  e.stopPropagation();
-                  const next = plannedPathPoints.slice();
-                  next.splice(i, 1);
-                  onPlannedPointsChangeRef.current?.(next);
-                  return;
-                }
-                // 只有已双击选中的点，才能开始拖拽
-                if (selectedIdx !== i) return;
-                // 开始拖拽
-                e.stopPropagation();
-                draggingIdx.current = i;
-                const planeType = dragPlaneTypeRef.current;
-                if (planeType === 'xy') {
-                  fixedVal.current = p.z;
-                  dragPlane.current = new THREE.Plane(new THREE.Vector3(0, 0, 1), -p.z);
-                } else if (planeType === 'xz') {
-                  fixedVal.current = p.y;
-                  dragPlane.current = new THREE.Plane(new THREE.Vector3(0, 1, 0), -p.y);
-                } else { // yz
-                  fixedVal.current = p.x;
-                  dragPlane.current = new THREE.Plane(new THREE.Vector3(1, 0, 0), -p.x);
-                }
-                if (controlsRef.current) controlsRef.current.enabled = false;
-                }}
-              >
-              <sphereGeometry args={[Math.max(0.001, plannedPointSize), 16, 16]} />
-              <meshStandardMaterial
-                color={selectedIdx === i ? "#f59e0b" : (i === 0 ? "#22c55e" : (i === plannedPathPoints.length - 1 ? "#ef4444" : "#60a5fa"))}
-                emissive={selectedIdx === i ? new THREE.Color('#f59e0b') : new THREE.Color('black')}
-                emissiveIntensity={selectedIdx === i ? 0.3 : 0}
-              />
-              </mesh>
-            ))}
+                  draggingIdx.current = i;
+                  const planeType = dragPlaneTypeRef.current;
+                  if (planeType === 'xy') {
+                    fixedVal.current = p.z;
+                    dragPlane.current = new THREE.Plane(new THREE.Vector3(0, 0, 1), -p.z);
+                  } else if (planeType === 'xz') {
+                    fixedVal.current = p.y;
+                    dragPlane.current = new THREE.Plane(new THREE.Vector3(0, 1, 0), -p.y);
+                  } else { // yz
+                    fixedVal.current = p.x;
+                    dragPlane.current = new THREE.Plane(new THREE.Vector3(1, 0, 0), -p.x);
+                  }
+                  if (controlsRef.current) controlsRef.current.enabled = false;
+                  }}
+                >
+                <sphereGeometry args={[Math.max(0.001, plannedPointSize * (isActive ? 1.3 : 1)), 16, 16]} />
+                <meshStandardMaterial
+                  color={waypointColor}
+                  emissive={selectedIdx === i || isActive ? new THREE.Color(waypointColor) : new THREE.Color('black')}
+                  emissiveIntensity={selectedIdx === i ? 0.3 : (isActive ? 0.2 : 0)}
+                />
+                </mesh>
+              );
+            })}
           </group>
         )}
 
@@ -698,6 +816,22 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
             }
           })()
         )}
+
+        {/* 无人机渲染 */}
+        {dronePosition && (
+          <Suspense fallback={
+            <mesh position={[dronePosition.x, dronePosition.y, dronePosition.z]}>
+              <boxGeometry args={[0.2, 0.2, 0.1]} />
+              <meshStandardMaterial color="#ff6b6b" />
+            </mesh>
+          }>
+            <DroneModel 
+              position={[dronePosition.x, dronePosition.y, dronePosition.z]}
+              orientation={dronePosition.orientation}
+            />
+          </Suspense>
+        )}
+
         <OrbitControls ref={controlsRef} makeDefault />
         <SceneFitter bbox={bbox} controlsRef={controlsRef} registerFit={registerFit} />
         <CameraOrienter bbox={bbox} plannedPoints={plannedPathPoints} controlsRef={controlsRef} registerOrient={registerOrient} />

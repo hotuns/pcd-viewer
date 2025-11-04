@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PCDCanvas, PCDCanvasHandle } from "./PCDCanvas";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,12 +10,16 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Maximize, PlayCircle, StopCircle, Plug, X } from "lucide-react";
-import MissionManager from "@/components/mission/MissionManager";
-import { Mission, DronePosition } from "@/types/mission";
+
+import { Mission, DronePosition, Waypoint, WaypointReachedMessage, MissionCompleteMessage } from "@/types/mission";
 // @ts-expect-error - roslib 没有官方类型定义
 import ROSLIB from "roslib";
 
-export default function MissionController() {
+interface MissionControllerProps {
+  initialMission?: Mission;
+}
+
+export default function MissionController({ initialMission }: MissionControllerProps) {
   const canvasRef = useRef<PCDCanvasHandle | null>(null);
   const [selectedMission, setSelectedMission] = useState<Mission | null>(null);
   const [pointSize, setPointSize] = useState(0.01);
@@ -24,7 +28,6 @@ export default function MissionController() {
   const [loading, setLoading] = useState(false);
   const [colorMode, setColorMode] = useState<"none" | "rgb" | "intensity" | "height">("none");
   const [pointSizeMax, setPointSizeMax] = useState(0.1);
-  // 已去除性能面板与航线绘制
   
   // ROS 连接
   const [rosUrl, setRosUrl] = useState("ws://192.168.203.30:9999");
@@ -36,6 +39,14 @@ export default function MissionController() {
   const [rosModalOpen, setRosModalOpen] = useState(false);
   const [subscribed, setSubscribed] = useState(false);
   const [msgCount, setMsgCount] = useState(0);
+  // 任务完成提示
+  const [completionOpen, setCompletionOpen] = useState(false);
+  const [completionData, setCompletionData] = useState<{ status: 'completed' | 'failed'; reason?: string } | null>(null);
+  // 消息时间与最近事件
+  const [lastPoseAt, setLastPoseAt] = useState<Date | null>(null);
+  const [lastWaypointIndex, setLastWaypointIndex] = useState<number | null>(null);
+  const [lastWaypointAt, setLastWaypointAt] = useState<Date | null>(null);
+  const [lastCompleteAt, setLastCompleteAt] = useState<Date | null>(null);
 
   // 点云和包围盒信息
   const [count, setCount] = useState<number>(0);
@@ -44,12 +55,10 @@ export default function MissionController() {
   const [plannedPoints, setPlannedPoints] = useState<Array<{ x: number; y: number; z: number }> | null>(null);
   const [plannedVisible, setPlannedVisible] = useState(true);
   const [plannedEditable, setPlannedEditable] = useState(false);
-  const [plannedPointSize, setPlannedPointSize] = useState(0.05);
-  const [plannedPointSizeMax, setPlannedPointSizeMax] = useState(0.25);
+  const [plannedPointSize, setPlannedPointSize] = useState(0.02);
+  const [plannedPointSizeMax, setPlannedPointSizeMax] = useState(0.1);
   const [plannedDragPlane, setPlannedDragPlane] = useState<'xy'|'xz'|'yz'>('xy');
   const [autoOrientPlane, setAutoOrientPlane] = useState<boolean>(false);
-
-  // 需求：不绘制航线，仅保存任务里的轨迹文件或 URL，可用于业务逻辑但不渲染
 
   // ROS 连接管理
   const connectROS = useCallback(() => {
@@ -101,12 +110,152 @@ export default function MissionController() {
     setRosConnected(false);
   }, []);
 
+  // 处理任务更新
+  const handleMissionUpdate = useCallback((updatedMission: Mission) => {
+    setSelectedMission(updatedMission);
+    
+    // 保存到localStorage
+    const savedMissions = localStorage.getItem('pcd-viewer-missions');
+    if (savedMissions) {
+      try {
+        const missions = JSON.parse(savedMissions);
+        const updatedMissions = missions.map((m: Mission & { createdAt: string; completedAt?: string; startedAt?: string }) => 
+          m.id === updatedMission.id ? {
+            ...updatedMission,
+            createdAt: updatedMission.createdAt.toISOString(),
+            startedAt: updatedMission.startedAt?.toISOString(),
+            completedAt: updatedMission.completedAt?.toISOString(),
+          } : m
+        );
+        localStorage.setItem('pcd-viewer-missions', JSON.stringify(updatedMissions));
+      } catch (error) {
+        console.error('Failed to save mission update:', error);
+      }
+    }
+    
+    // 如果进入planning状态，开启航线编辑模式
+    if (updatedMission.status === 'planning') {
+      setPlannedEditable(true);
+    } else if (updatedMission.status === 'ready') {
+      setPlannedEditable(false);
+    }
+  }, []);
+
+  // 处理航点到达
+  const handleWaypointReached = useCallback((msg: WaypointReachedMessage) => {
+    setSelectedMission(currentMission => {
+      if (!currentMission || !currentMission.waypoints) return currentMission;
+
+      const waypointIndex = msg.waypoint_index;
+      if (waypointIndex < 0 || waypointIndex >= currentMission.waypoints.length) return currentMission;
+
+      // 直接在现有数组上更新，不扩充长度
+      const updatedWaypoints = currentMission.waypoints.map((wp, index) => {
+        if (index <= waypointIndex) {
+          // 将所有 <= 当前索引的航点标记为 completed
+          return {
+            ...wp,
+            status: 'completed' as const,
+            completedAt: wp.completedAt ?? new Date((msg.timestamp ?? Math.floor(Date.now()/1000)) * 1000),
+          };
+        }
+        return wp;
+      });
+
+      // 设置下一个为 active（如果存在）
+      const nextIndex = waypointIndex + 1;
+      if (nextIndex < updatedWaypoints.length && updatedWaypoints[nextIndex].status !== 'completed') {
+        updatedWaypoints[nextIndex] = { ...updatedWaypoints[nextIndex], status: 'active' };
+      }
+
+      const updatedMission: Mission = {
+        ...currentMission,
+        waypoints: updatedWaypoints,
+        currentWaypointIndex: nextIndex < updatedWaypoints.length ? nextIndex : undefined,
+        executionLog: [
+          ...(currentMission.executionLog || []),
+          { timestamp: new Date(), event: 'waypoint_reached', details: { waypointIndex, position: msg.position } }
+        ]
+      };
+
+      console.log(`Waypoint ${waypointIndex} reached`);
+      return updatedMission;
+    });
+  }, []);  // 处理任务完成
+  const handleMissionComplete = useCallback((msg: MissionCompleteMessage) => {
+    setSelectedMission(currentMission => {
+      if (!currentMission) return currentMission;
+      
+      const updatedMission = {
+        ...currentMission,
+        status: msg.status === 'completed' ? 'completed' as const : 'failed' as const,
+        completedAt: new Date(msg.timestamp * 1000),
+        executionLog: [
+          ...(currentMission.executionLog || []),
+          {
+            timestamp: new Date(),
+            event: 'mission_complete',
+            details: { status: msg.status, reason: msg.reason }
+          }
+        ]
+      };
+      
+      console.log(`Mission ${msg.status}: ${msg.reason || 'No reason provided'}`);
+      return updatedMission;
+    });
+    
+    setMissionRunning(false);
+    // 弹出任务完成/失败提示
+    setCompletionData({ status: msg.status === 'completed' ? 'completed' : 'failed', reason: msg.reason });
+    setCompletionOpen(true);
+  }, []);
+
+  // 初始化航点状态
+  const initializeWaypoints = useCallback((mission: Mission, points: Array<{ x: number; y: number; z: number }>) => {
+    if (!mission || mission.status !== 'ready') return mission;
+    
+    const waypoints: Waypoint[] = points.map((point, index) => ({
+      ...point,
+      id: `${mission.id}_wp_${index}`,
+      status: 'pending',
+      index
+    }));
+    if (waypoints.length > 0) {
+      waypoints[0] = { ...waypoints[0], status: 'active' } as Waypoint;
+    }
+    
+    const updatedMission = {
+      ...mission,
+      waypoints,
+      currentWaypointIndex: 0,
+      status: 'running' as const,
+      startedAt: new Date()
+    };
+    
+    setSelectedMission(updatedMission);
+    return updatedMission;
+  }, []);
+
   // 开始任务
   const startMission = useCallback(() => {
     if (!rosConnected || !rosRef.current) {
       alert('请先连接 ROS');
       return;
     }
+
+    if (!selectedMission || selectedMission.status !== 'ready') {
+      alert('请先选择一个就绪状态的任务');
+      return;
+    }
+
+    if (!plannedPoints || plannedPoints.length === 0) {
+      alert('未加载到规划航线，请先配置/加载航线文件');
+      return;
+    }
+
+    // 初始化航点状态
+    const mission = initializeWaypoints(selectedMission, plannedPoints || []);
+    if (!mission) return;
 
     // 订阅无人机位置话题（PoseStamped）
     const odomTopic = new ROSLIB.Topic({
@@ -115,12 +264,29 @@ export default function MissionController() {
       messageType: 'geometry_msgs/PoseStamped'
     });
 
-    console.log('Subscribing to /odom_visualization/pose (geometry_msgs/PoseStamped)');
+    // 订阅航点到达话题
+    const waypointTopic = new ROSLIB.Topic({
+      ros: rosRef.current,
+      name: '/mission/waypoint_reached',
+      messageType: 'std_msgs/String'
+    });
+
+    // 订阅任务完成话题
+    const missionCompleteTopic = new ROSLIB.Topic({
+      ros: rosRef.current,
+      name: '/mission/complete',
+      messageType: 'std_msgs/String'
+    });
+
+    console.log('Subscribing to mission topics...');
     setMsgCount(0);
+
+    // 位置更新
     odomTopic.subscribe((msg: {
       pose: { position: { x: number; y: number; z: number }; orientation: { x: number; y: number; z: number; w: number } };
     }) => {
       setMsgCount((c) => c + 1);
+      setLastPoseAt(new Date());
       const pos = msg.pose.position;
       const orient = msg.pose.orientation;
 
@@ -134,14 +300,36 @@ export default function MissionController() {
           z: orient.z,
           w: orient.w
         }
-        // PoseStamped 无速度信息
       });
+    });
+
+    // 航点到达处理
+    waypointTopic.subscribe((msg: { data: string }) => {
+      try {
+        const waypointMsg: WaypointReachedMessage = JSON.parse(msg.data);
+        setLastWaypointIndex(waypointMsg.waypoint_index);
+        setLastWaypointAt(new Date((waypointMsg.timestamp ?? Math.floor(Date.now()/1000)) * 1000));
+        handleWaypointReached(waypointMsg);
+      } catch (error) {
+        console.error('Failed to parse waypoint message:', error);
+      }
+    });
+
+    // 任务完成处理
+    missionCompleteTopic.subscribe((msg: { data: string }) => {
+      try {
+        const completeMsg: MissionCompleteMessage = JSON.parse(msg.data);
+        setLastCompleteAt(new Date((completeMsg.timestamp ?? Math.floor(Date.now()/1000)) * 1000));
+        handleMissionComplete(completeMsg);
+      } catch (error) {
+        console.error('Failed to parse mission complete message:', error);
+      }
     });
 
     odomTopicRef.current = odomTopic;
     setMissionRunning(true);
     setSubscribed(true);
-  }, [rosConnected]);
+  }, [rosConnected, selectedMission, plannedPoints, initializeWaypoints, handleWaypointReached, handleMissionComplete]);
 
   // 停止任务
   const stopMission = useCallback(() => {
@@ -153,6 +341,13 @@ export default function MissionController() {
     setDronePosition(null);
     setSubscribed(false);
   }, []);
+
+  // 处理初始任务
+  useEffect(() => {
+    if (initialMission) {
+      setSelectedMission(initialMission);
+    }
+  }, [initialMission]);
 
   // 组件卸载时清理
   useEffect(() => {
@@ -180,9 +375,15 @@ export default function MissionController() {
     setPointSizeMax(newMax);
     setPointSize((p) => Math.min(p, newMax));
     // 同步为规划航点提供一个独立的尺寸上限（更显著）
-    const pathMax = Math.max(0.01, diag * 0.05);
+    // 航点尺寸上限：更保守的范围，避免调节过大
+    const pathMax = Math.min(0.1, Math.max(0.01, diag * 0.02));
     setPlannedPointSizeMax(pathMax);
-    setPlannedPointSize((s) => Math.min(Math.max(s, pathMax * 0.02), pathMax * 0.5));
+    setPlannedPointSize((s) => {
+      const cur = typeof s === 'number' ? s : 0.02;
+      const minV = Math.max(0.002, pathMax * 0.2);
+      const maxV = Math.max(minV, pathMax * 0.8);
+      return Math.min(Math.max(cur, minV), maxV);
+    });
   }, []);
   const handleLoadingChange = useCallback((v: boolean) => setLoading(v), []);
   // 当开启自动对齐时，确保切换开关或当前平面变化时都会对齐一次
@@ -229,10 +430,10 @@ export default function MissionController() {
   return (
     <div className="w-full h-[calc(100vh-2rem)] grid grid-cols-[320px_1fr] gap-4 p-4">
       <aside className="bg-card border border-border rounded-lg p-4 space-y-4 overflow-y-auto">
-        {/* 任务管理 */}
-        <MissionManager
+        {/* 任务配置 */}
+        <TaskConfiguration 
           selectedMission={selectedMission}
-          onMissionSelect={setSelectedMission}
+          onMissionUpdate={handleMissionUpdate}
         />
 
         <Separator />
@@ -250,7 +451,7 @@ export default function MissionController() {
           )}
           <Button
             onClick={missionRunning ? stopMission : startMission}
-            disabled={!rosConnected}
+            disabled={!rosConnected || !selectedMission || selectedMission.status !== 'ready' || !plannedPoints || plannedPoints.length === 0}
             className="w-full"
             variant={missionRunning ? "destructive" : "default"}
           >
@@ -264,6 +465,9 @@ export default function MissionController() {
               </>
             )}
           </Button>
+          {!missionRunning && rosConnected && selectedMission?.status === 'ready' && (!plannedPoints || plannedPoints.length === 0) && (
+            <div className="text-[11px] text-yellow-600 mt-1">未检测到规划航线，请先在任务配置中加载 .json</div>
+          )}
         </div>
 
         {/* 无人机状态 */}
@@ -286,6 +490,54 @@ export default function MissionController() {
             </div>
           </>
         )}
+
+        {/* 任务进度统计 */}
+        {selectedMission?.waypoints && selectedMission.waypoints.length > 0 && (
+          <>
+            <Separator />
+            <div className="space-y-1 text-xs">
+              <Label>任务进度</Label>
+              {(() => {
+                const completed = selectedMission.waypoints!.filter(w => w.status === 'completed').length;
+                const total = selectedMission.waypoints!.length;
+                const pct = Math.max(0, Math.min(100, total > 0 ? Math.round((completed / total) * 100) : 0));
+                return (
+                  <div className="space-y-1">
+                    <div className="text-muted-foreground">
+                      已完成 {completed} / {total}（{pct}%）
+                      {typeof selectedMission.currentWaypointIndex === 'number' && (
+                        <span>（当前目标: P{selectedMission.currentWaypointIndex}）</span>
+                      )}
+                    </div>
+                    <div className="h-2 w-full rounded bg-muted overflow-hidden">
+                      <div className="h-full bg-primary" style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </>
+        )}
+
+        {/* 消息/订阅状态 */}
+        <>
+          <Separator />
+          <div className="space-y-1 text-xs">
+            <Label>消息状态</Label>
+            <div className="text-muted-foreground">
+              Pose 消息: {msgCount}
+              {lastPoseAt && <span>（最近: {lastPoseAt.toLocaleTimeString()}）</span>}
+            </div>
+            <div className="text-muted-foreground">
+              最近航点索引: {typeof lastWaypointIndex === 'number' ? lastWaypointIndex : '-'}
+              {lastWaypointAt && <span>（时间: {lastWaypointAt.toLocaleTimeString()}）</span>}
+            </div>
+            <div className="text-muted-foreground">
+              最近完成时间: {lastCompleteAt ? lastCompleteAt.toLocaleTimeString() : '-'}
+            </div>
+          </div>
+          </>
+        
 
         <Separator />
 
@@ -376,9 +628,9 @@ export default function MissionController() {
             <Label className="text-sm">轨迹点尺寸</Label>
             <Slider 
               value={[plannedPointSize]} 
-              min={Math.max(0.001, plannedPointSizeMax / 200)} 
+              min={Math.max(0.001, plannedPointSizeMax / 100)} 
               max={plannedPointSizeMax} 
-              step={plannedPointSizeMax / 200}
+              step={Math.max(plannedPointSizeMax / 100, 0.001)}
               onValueChange={(v) => setPlannedPointSize(v[0] ?? plannedPointSize)} 
             />
             <div className="text-xs text-muted-foreground">{plannedPointSize.toFixed(3)}（上限 {plannedPointSizeMax.toFixed(3)}）</div>
@@ -467,6 +719,32 @@ export default function MissionController() {
           </div>
         )}
 
+        {/* 任务完成/失败提示弹窗 */}
+        {completionOpen && completionData && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center">
+            <div className="absolute inset-0 bg-black/40" onClick={() => setCompletionOpen(false)} />
+            <div className="relative bg-background border border-border rounded-lg shadow-xl w-[420px] max-w-[90vw] p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-medium">任务{completionData.status === 'completed' ? '完成' : '失败'}</div>
+                <Button size="icon" variant="ghost" onClick={() => setCompletionOpen(false)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="space-y-2 text-sm">
+                <div className={completionData.status === 'completed' ? 'text-green-600' : 'text-red-600'}>
+                  {completionData.status === 'completed' ? '任务已顺利完成' : '任务执行失败'}
+                </div>
+                {completionData.reason && (
+                  <div className="text-muted-foreground">原因：{completionData.reason}</div>
+                )}
+              </div>
+              <div className="mt-4 flex gap-2 justify-end">
+                <Button variant="outline" onClick={() => setCompletionOpen(false)}>关闭</Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="w-full h-full min-h-[400px] relative">
           {loading && (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/60 backdrop-blur-sm">
@@ -493,9 +771,260 @@ export default function MissionController() {
               setPlannedPoints(pts);
             }}
             plannedDragPlane={plannedDragPlane}
+            dronePosition={dronePosition}
+            waypoints={selectedMission?.waypoints}
+            currentWaypointIndex={selectedMission?.currentWaypointIndex}
           />
         </div>
       </section>
+    </div>
+  );
+}
+
+// 任务配置组件
+interface TaskConfigurationProps {
+  selectedMission: Mission | null;
+  onMissionUpdate: (mission: Mission) => void;
+}
+
+function TaskConfiguration({ selectedMission, onMissionUpdate }: TaskConfigurationProps) {
+  const sceneFileRef = useRef<HTMLInputElement>(null);
+  const trajectoryFileRef = useRef<HTMLInputElement>(null);
+
+  const getStatusText = (status: string) => {
+    const statusMap: Record<string, string> = {
+      draft: '草稿',
+      configured: '已配置',
+      planning: '规划中', 
+      ready: '就绪',
+      running: '执行中',
+      paused: '暂停',
+      completed: '完成',
+      failed: '失败'
+    };
+    return statusMap[status] || status;
+  };
+
+  const updateMission = (updates: Partial<Mission>) => {
+    if (!selectedMission) return;
+    const updated = { ...selectedMission, ...updates };
+    
+    // 自动更新状态逻辑
+    if (!selectedMission.scene && updated.scene && updated.trajectory) {
+      updated.status = 'configured';
+    } else if (!selectedMission.trajectory && updated.trajectory && updated.scene) {
+      updated.status = 'configured';
+    }
+    
+    onMissionUpdate(updated);
+  };
+
+  const updateScene = (file: File) => {
+    updateMission({ scene: { type: "file", file } });
+  };
+
+  const updateSceneURL = (url: string) => {
+    if (!url.trim()) return;
+    updateMission({ scene: { type: "url", url } });
+  };
+
+  const updateTrajectory = (file: File) => {
+    updateMission({ trajectory: { type: "file", file } });
+  };
+
+  const updateTrajectoryURL = (url: string) => {
+    if (!url.trim()) return;
+    updateMission({ trajectory: { type: "url", url } });
+  };
+
+  const clearScene = () => {
+    const { scene, ...rest } = selectedMission!;
+    updateMission(rest);
+  };
+
+  const clearTrajectory = () => {
+    const { trajectory, ...rest } = selectedMission!;
+    updateMission(rest);
+  };
+
+  const startPlanning = () => {
+    updateMission({ status: 'planning' });
+  };
+
+  const confirmTrajectory = () => {
+    updateMission({ status: 'ready' });
+  };
+
+  if (!selectedMission) {
+    return (
+      <div className="space-y-4">
+        <h2 className="text-lg font-semibold">任务配置</h2>
+        <div className="text-sm text-muted-foreground">
+          请从启动页选择一个任务
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">任务配置</h2>
+        <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-600">
+          {getStatusText(selectedMission.status)}
+        </span>
+      </div>
+
+      {/* 基本信息 */}
+      <div className="text-sm space-y-1">
+        <div>任务: {selectedMission.name}</div>
+        <div>状态: {getStatusText(selectedMission.status)}</div>
+        {selectedMission.waypoints && (
+          <div>
+            进度: {selectedMission.waypoints.filter(w => w.status === 'completed').length}/{selectedMission.waypoints.length}
+          </div>
+        )}
+      </div>
+
+      {/* 草稿/已配置阶段：配置场景和航线 */}
+      {(selectedMission.status === 'draft' || selectedMission.status === 'configured') && (
+        <>
+          <Separator />
+          
+          {/* 场景配置 */}
+          <div className="space-y-2">
+            <Label className="flex items-center gap-2">
+              场景文件 (.pcd)
+              {selectedMission.scene && <span className="text-xs text-green-600">✓</span>}
+            </Label>
+            {!selectedMission.scene ? (
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => sceneFileRef.current?.click()}
+                >
+                  选择文件
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const url = prompt("输入场景文件URL:");
+                    if (url) updateSceneURL(url);
+                  }}
+                >
+                  输入URL
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">
+                  {selectedMission.scene.type === "file" 
+                    ? selectedMission.scene.file.name 
+                    : selectedMission.scene.url}
+                </span>
+                <Button size="sm" variant="ghost" onClick={clearScene}>
+                  清除
+                </Button>
+              </div>
+            )}
+          </div>
+
+          <Separator />
+
+          {/* 航线配置 */}
+          <div className="space-y-2">
+            <Label className="flex items-center gap-2">
+              规划航线 (.json)
+              {selectedMission.trajectory && <span className="text-xs text-green-600">✓</span>}
+            </Label>
+            {!selectedMission.trajectory ? (
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => trajectoryFileRef.current?.click()}
+                >
+                  选择文件
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const url = prompt("输入航线文件URL:");
+                    if (url) updateTrajectoryURL(url);
+                  }}
+                >
+                  输入URL
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">
+                  {selectedMission.trajectory.type === "file" 
+                    ? selectedMission.trajectory.file.name 
+                    : selectedMission.trajectory.url}
+                </span>
+                <Button size="sm" variant="ghost" onClick={clearTrajectory}>
+                  清除
+                </Button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* 已配置阶段：可以开始规划 */}
+      {selectedMission.status === 'configured' && (
+        <>
+          <Separator />
+          <Button onClick={startPlanning} className="w-full">
+            开始规划航线
+          </Button>
+        </>
+      )}
+
+      {/* 规划阶段：显示编辑提示和确认按钮 */}
+      {selectedMission.status === 'planning' && (
+        <>
+          <Separator />
+          <div className="space-y-2">
+            <div className="text-sm text-muted-foreground">
+              在3D视图中编辑航线：
+              <br />• 双击选中航点
+              <br />• 拖拽移动位置
+              <br />• Shift+点击添加航点  
+              <br />• Alt+点击删除航点
+            </div>
+            <Button onClick={confirmTrajectory} className="w-full">
+              确认航线，准备执行
+            </Button>
+          </div>
+        </>
+      )}
+
+      {/* 隐藏的文件输入 */}
+      <input
+        ref={sceneFileRef}
+        type="file"
+        accept=".pcd"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) updateScene(file);
+        }}
+      />
+      <input
+        ref={trajectoryFileRef}
+        type="file"
+        accept=".json"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) updateTrajectory(file);
+        }}
+      />
     </div>
   );
 }
