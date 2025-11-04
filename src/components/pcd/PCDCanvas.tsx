@@ -2,68 +2,14 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, Suspense } from "react";
 import { Canvas, useThree, ThreeEvent } from "@react-three/fiber";
-import { Grid, OrbitControls, Line, Html, useGLTF } from "@react-three/drei";
+import { Grid, OrbitControls, Line } from "@react-three/drei";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { PCDLoader } from "three/examples/jsm/loaders/PCDLoader.js";
-import type { Source, DronePosition, Waypoint } from "@/types/mission";
-
-// 无人机GLTF模型组件
-function DroneModel({ position, orientation }: { position: [number, number, number]; orientation?: { x: number; y: number; z: number; w: number } }) {
-  const { scene, materials } = useGLTF('/drone/scene.gltf');
-  
-  // 克隆场景并确保材质正确
-  const clonedScene = scene.clone();
-  
-  // 遍历所有材质，确保它们能正确渲染
-  clonedScene.traverse((child) => {
-    if (child instanceof THREE.Mesh && child.material) {
-      // 如果是标准材质
-      if (child.material instanceof THREE.MeshStandardMaterial) {
-        child.material.needsUpdate = true;
-        
-        // 调试：检查纹理是否正确加载
-        if (child.material.map) {
-          console.log('Base color texture found:', child.material.map);
-        }
-        if (child.material.emissiveMap) {
-          console.log('Emissive texture found:', child.material.emissiveMap);
-        }
-        
-        // 提升材质亮度，确保可见
-        child.material.toneMapped = false;
-        
-        // 如果有发光贴图，增强发光强度
-        if (child.material.emissiveMap) {
-          child.material.emissiveIntensity = 2.5;
-        }
-      }
-      
-      // 确保网格可以投射和接收阴影
-      child.castShadow = true;
-      child.receiveShadow = true;
-    }
-  });
-  
-  return (
-    <group 
-      position={position}
-      quaternion={orientation ? [
-        orientation.x,
-        orientation.y,
-        orientation.z,
-        orientation.w
-      ] : undefined}
-      scale={[0.2, 0.2, 0.2]} // 调整缩放到更合适的大小
-      rotation={[0, 0, 0]} // 如果需要，可以调整默认旋转
-    >
-      <primitive object={clonedScene} />
-    </group>
-  );
-}
-
-// 预加载GLTF模型
-useGLTF.preload('/drone/scene.gltf');
+import type { Source, DronePosition, Waypoint, PointCloudFrame, GridMapData } from "@/types/mission";
+import { DroneModel } from "./DroneModel";
+import { PointCloudMap } from "./PointCloudMap";
+import { CameraFollower } from "./CameraFollower";
 
 export type PCDCanvasHandle = {
   fitToView: () => void;
@@ -75,6 +21,7 @@ export type PCDCanvasProps = {
   pointSize?: number;
   showGrid?: boolean;
   showAxes?: boolean;
+  showSceneCloud?: boolean; // 场景点云显示开关
   colorMode?: "none" | "rgb" | "intensity" | "height"; // none 表示禁用伪着色
   roundPoints?: boolean; // 使用圆盘精灵渲染点
   onLoadedAction?: (info: { bbox: THREE.Box3; count: number }) => void;
@@ -86,8 +33,13 @@ export type PCDCanvasProps = {
   onPlannedPointsChange?: (points: Array<{ x: number; y: number; z: number }>) => void; // 拖拽时回传
   plannedDragPlane?: 'xy' | 'xz' | 'yz'; // 拖拽所用平面
   dronePosition?: DronePosition | null; // 无人机位置和姿态
+  followDrone?: boolean; // 视角跟随飞机
   waypoints?: Waypoint[]; // 航点状态信息
   currentWaypointIndex?: number; // 当前目标航点
+  realtimeFrames?: PointCloudFrame[]; // 实时点云帧数据
+  showRealtimeCloud?: boolean; // 是否显示实时点云
+  gridMapData?: GridMapData | null; // 网格地图数据
+  showGridMap?: boolean; // 是否显示网格地图
 };
 
 function SceneFitter({
@@ -184,7 +136,7 @@ function CameraOrienter({
 }
 
 export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PCDCanvas(
-  { source, pointSize = 0.01, showGrid = true, showAxes = true, colorMode = "none", roundPoints = true, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathEditable = false, onPlannedPointsChange, plannedDragPlane = 'xy', dronePosition, waypoints, currentWaypointIndex },
+  { source, pointSize = 0.01, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathEditable = false, onPlannedPointsChange, plannedDragPlane = 'xy', dronePosition, followDrone = false, waypoints, currentWaypointIndex, realtimeFrames, showRealtimeCloud = true, gridMapData, showGridMap = false },
   ref
 ) {
   const [geom, setGeom] = useState<THREE.BufferGeometry | null>(null);
@@ -415,7 +367,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           <Grid args={[10, 10]} cellColor="#2a2a2a" sectionColor="#3a3a3a" infiniteGrid />
         )}
         {showAxes && <axesHelper args={[50]} />}
-        {geom && (
+        {showSceneCloud && geom && (
           <points key={colorVersion} geometry={geom} frustumCulled={false}>
             <pointsMaterial
               size={pointSize}
@@ -817,6 +769,11 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           })()
         )}
 
+        {/* 点云地图渲染（来自ROS PointCloud2消息） */}
+        {showGridMap && gridMapData && gridMapData.data && gridMapData.data.length > 0 && (
+          <PointCloudMap gridMapData={gridMapData} />
+        )}
+
         {/* 无人机渲染 */}
         {dronePosition && (
           <Suspense fallback={
@@ -835,6 +792,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         <OrbitControls ref={controlsRef} makeDefault />
         <SceneFitter bbox={bbox} controlsRef={controlsRef} registerFit={registerFit} />
         <CameraOrienter bbox={bbox} plannedPoints={plannedPathPoints} controlsRef={controlsRef} registerOrient={registerOrient} />
+        <CameraFollower dronePosition={dronePosition ?? null} followDrone={followDrone} controlsRef={controlsRef} />
       </Canvas>
       {plannedPathVisible && plannedPathEditable && (
         (() => {

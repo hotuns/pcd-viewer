@@ -12,3 +12,8 @@ roslaunch ego_planner run_in_sim.launch
 启动ws
 roslaunch rosbridge_server rosbridge_websocket.launch
 
+
+
+
+roscd ego_planner/launch
+roscd rosbridge_server/launch

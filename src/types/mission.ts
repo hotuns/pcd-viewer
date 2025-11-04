@@ -95,3 +95,35 @@ export interface MissionCompleteMessage {
   timestamp: number;
   reason?: string;
 }
+
+// 实时点云帧数据
+export interface PointCloudFrame {
+  id: string;
+  timestamp: Date;
+  points: Array<{
+    x: number;
+    y: number;
+    z: number;
+    intensity?: number;
+    r?: number;
+    g?: number;
+    b?: number;
+  }>;
+  frameId: string;  // ROS frame_id
+}
+
+// 网格地图数据 (实际来自 PointCloud2)
+export interface GridMapData {
+  timestamp: Date;
+  width: number;
+  height: number;
+  resolution: number;  // 米/像素 (对于 PointCloud2 可能需要估算)
+  origin: {
+    x: number;
+    y: number;
+    z: number;
+  };
+  data: number[];  // 对于 OccupancyGrid 是占用概率；对于 PointCloud2 是原始二进制数据
+  frameId?: string;  // ROS frame_id
+  pointCount?: number;  // PointCloud2 的点数
+}

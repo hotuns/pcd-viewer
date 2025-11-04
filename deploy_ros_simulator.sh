@@ -49,7 +49,7 @@ echo "1. SSH连接到ROS机器:"
 echo "   ssh $ROS_USER@$ROS_HOST"
 echo ""
 echo "2. 加载ROS环境:"
-echo "   source /home/ren/catkin_ws/devel/setup.bash"
+echo "   source /home/root/catkin_ws/devel/setup.bash"
 echo ""
 echo "3. 确保以下服务已启动:"
 echo "   终端1: roslaunch ego_planner run_in_sim.launch"
@@ -68,7 +68,7 @@ cat > connect_ros.sh << 'EOF'
 #!/bin/bash
 echo "🔗 快速连接ROS机器并运行模拟器"
 ssh root@192.168.203.30 << 'ENDSSH'
-source /home/ren/catkin_ws/devel/setup.bash
+source /home/root/catkin_ws/devel/setup.bash
 mkdir -p /tmp/public
 cd /tmp
 python3 ros_mission_simulator.py

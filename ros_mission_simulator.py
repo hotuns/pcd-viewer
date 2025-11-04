@@ -20,6 +20,9 @@ class MissionSimulator:
         self.pose_pub = rospy.Publisher('/odom_visualization/pose', PoseStamped, queue_size=10)
         self.waypoint_pub = rospy.Publisher('/mission/waypoint_reached', String, queue_size=10)
         self.mission_complete_pub = rospy.Publisher('/mission/complete', String, queue_size=10)
+        # 注意：实时点云和网格地图由真实的 ROS 系统发布，这里不再模拟
+        # self.cloud_pub = rospy.Publisher('/velodyne_points', String, queue_size=1)
+        # self.grid_map_pub = rospy.Publisher('/grid_map/occupancy_inflate', String, queue_size=1)
         
         # 任务参数
         self.mission_id = "test_mission_001"
@@ -159,6 +162,14 @@ class MissionSimulator:
             pose_msg.pose.orientation.w = 1.0
         
         self.pose_pub.publish(pose_msg)
+        
+        # 注意：实时点云和网格地图由真实的 ROS 系统发布，这里不再调用模拟发布
+        # self.publish_simulated_cloud(x, y, z)
+        # self.publish_simulated_grid_map(x, y)
+    
+    # 以下模拟函数已禁用，使用真实的 ROS 数据
+    # def publish_simulated_cloud(self, drone_x, drone_y, drone_z):
+    # def publish_simulated_grid_map(self, drone_x, drone_y):
     
     def reach_waypoint(self):
         """航点到达处理"""

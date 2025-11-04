@@ -10,8 +10,9 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Maximize, PlayCircle, StopCircle, Plug, X } from "lucide-react";
-
-import { Mission, DronePosition, Waypoint, WaypointReachedMessage, MissionCompleteMessage } from "@/types/mission";
+import { useRosConnection } from "@/hooks/useRosConnection";
+import { createGridMapDataFromPointCloud2 } from "@/lib/pointCloudParser";
+import { Mission, DronePosition, Waypoint, WaypointReachedMessage, MissionCompleteMessage, PointCloudFrame, GridMapData } from "@/types/mission";
 // @ts-expect-error - roslib 没有官方类型定义
 import ROSLIB from "roslib";
 
@@ -28,14 +29,15 @@ export default function MissionController({ initialMission }: MissionControllerP
   const [loading, setLoading] = useState(false);
   const [colorMode, setColorMode] = useState<"none" | "rgb" | "intensity" | "height">("none");
   const [pointSizeMax, setPointSizeMax] = useState(0.1);
+  const [showSceneCloud, setShowSceneCloud] = useState(true); // 场景点云显示开关
+  const [followDrone, setFollowDrone] = useState(false); // 视角跟随飞机
   
-  // ROS 连接
-  const [rosUrl, setRosUrl] = useState("ws://192.168.203.30:9999");
-  const [rosConnected, setRosConnected] = useState(false);
+  // ROS 连接（使用 hook）
+  const { rosUrl, setRosUrl, rosConnected, rosRef, connectROS, disconnectROS } = useRosConnection();
   const [missionRunning, setMissionRunning] = useState(false);
   const [dronePosition, setDronePosition] = useState<DronePosition | null>(null);
-  const rosRef = useRef<typeof ROSLIB.Ros | null>(null);
   const odomTopicRef = useRef<typeof ROSLIB.Topic | null>(null);
+  const gridMapTopicRef = useRef<typeof ROSLIB.Topic | null>(null);
   const [rosModalOpen, setRosModalOpen] = useState(false);
   const [subscribed, setSubscribed] = useState(false);
   const [msgCount, setMsgCount] = useState(0);
@@ -47,6 +49,15 @@ export default function MissionController({ initialMission }: MissionControllerP
   const [lastWaypointIndex, setLastWaypointIndex] = useState<number | null>(null);
   const [lastWaypointAt, setLastWaypointAt] = useState<Date | null>(null);
   const [lastCompleteAt, setLastCompleteAt] = useState<Date | null>(null);
+  
+  // 实时点云数据
+  const [realtimeFrames, setRealtimeFrames] = useState<PointCloudFrame[]>([]);
+  const [gridMapData, setGridMapData] = useState<GridMapData | null>(null);
+  const [maxFrames, setMaxFrames] = useState(10);
+  const [showRealtimeCloud, setShowRealtimeCloud] = useState(true);
+  const [showGridMap, setShowGridMap] = useState(true);
+  const [lastCloudAt, setLastCloudAt] = useState<Date | null>(null);
+  const [lastGridMapAt, setLastGridMapAt] = useState<Date | null>(null);
 
   // 点云和包围盒信息
   const [count, setCount] = useState<number>(0);
@@ -60,55 +71,25 @@ export default function MissionController({ initialMission }: MissionControllerP
   const [plannedDragPlane, setPlannedDragPlane] = useState<'xy'|'xz'|'yz'>('xy');
   const [autoOrientPlane, setAutoOrientPlane] = useState<boolean>(false);
 
-  // ROS 连接管理
-  const connectROS = useCallback(() => {
-    if (!rosUrl) return;
-    
-    try {
-      // 断开旧连接
-      if (rosRef.current) {
-        rosRef.current.close();
-      }
-
-      const ros = new ROSLIB.Ros({
-        url: rosUrl
-      });
-
-      ros.on('connection', () => {
-        console.log('Connected to ROS');
-        setRosConnected(true);
-        // 连接成功后关闭弹窗
-        setRosModalOpen(false);
-      });
-
-      ros.on('error', (error: unknown) => {
-        console.error('ROS connection error:', error);
-        setRosConnected(false);
-      });
-
-      ros.on('close', () => {
-        console.log('ROS connection closed');
-        setRosConnected(false);
-      });
-
-      rosRef.current = ros;
-    } catch (error) {
-      console.error('Failed to connect to ROS:', error);
-      alert('ROS 连接失败');
-    }
-  }, [rosUrl]);
-
-  const disconnectROS = useCallback(() => {
-    if (rosRef.current) {
-      rosRef.current.close();
-      rosRef.current = null;
-    }
+  // 扩展 disconnectROS 以清理所有订阅
+  const handleDisconnect = useCallback(() => {
     if (odomTopicRef.current) {
       odomTopicRef.current.unsubscribe();
       odomTopicRef.current = null;
     }
-    setRosConnected(false);
-  }, []);
+    if (gridMapTopicRef.current) {
+      gridMapTopicRef.current.unsubscribe();
+      gridMapTopicRef.current = null;
+    }
+    disconnectROS();
+  }, [disconnectROS]);
+
+  // ROS 连接成功后的回调
+  useEffect(() => {
+    if (rosConnected) {
+      setRosModalOpen(false);
+    }
+  }, [rosConnected]);
 
   // 处理任务更新
   const handleMissionUpdate = useCallback((updatedMission: Mission) => {
@@ -208,6 +189,70 @@ export default function MissionController({ initialMission }: MissionControllerP
     // 弹出任务完成/失败提示
     setCompletionData({ status: msg.status === 'completed' ? 'completed' : 'failed', reason: msg.reason });
     setCompletionOpen(true);
+  }, []);
+
+  // 处理实时点云数据
+  const handleRealtimePointCloud = useCallback((msg: {
+    header: { stamp: { sec: number; nsec: number }; frame_id: string };
+    points: Array<{ x: number; y: number; z: number; intensity?: number; rgb?: number }>;
+  }) => {
+    const timestamp = new Date(msg.header.stamp.sec * 1000 + msg.header.stamp.nsec / 1000000);
+    setLastCloudAt(timestamp);
+
+    const points = msg.points.map(p => ({
+      x: p.x,
+      y: p.y,
+      z: p.z,
+      intensity: p.intensity,
+      // RGB数据解析（如果存在）
+      ...(p.rgb ? {
+        r: (p.rgb >> 16) & 0xFF,
+        g: (p.rgb >> 8) & 0xFF,
+        b: p.rgb & 0xFF
+      } : {})
+    }));
+
+    const newFrame: PointCloudFrame = {
+      id: `frame_${timestamp.getTime()}`,
+      timestamp,
+      points,
+      frameId: msg.header.frame_id
+    };
+
+    setRealtimeFrames(prevFrames => {
+      const updated = [newFrame, ...prevFrames];
+      // 保持最近的N帧
+      return updated.slice(0, maxFrames);
+    });
+  }, [maxFrames]);
+
+  // 处理网格地图数据
+  const handleGridMap = useCallback((msg: {
+    info: {
+      width: number;
+      height: number;
+      resolution: number;
+      origin: { position: { x: number; y: number; z: number } };
+    };
+    data: number[];
+  }) => {
+    const timestamp = new Date();
+    setLastGridMapAt(timestamp);
+
+    const gridMap: GridMapData = {
+      timestamp,
+      width: msg.info.width,
+      height: msg.info.height,
+      resolution: msg.info.resolution,
+      origin: {
+        x: msg.info.origin.position.x,
+        y: msg.info.origin.position.y,
+        z: msg.info.origin.position.z
+      },
+      data: msg.data
+    };
+
+    setGridMapData(gridMap);
   }, []);
 
   // 初始化航点状态
@@ -337,6 +382,10 @@ export default function MissionController({ initialMission }: MissionControllerP
       odomTopicRef.current.unsubscribe();
       odomTopicRef.current = null;
     }
+    if (gridMapTopicRef.current) {
+      gridMapTopicRef.current.unsubscribe();
+      gridMapTopicRef.current = null;
+    }
     setMissionRunning(false);
     setDronePosition(null);
     setSubscribed(false);
@@ -352,9 +401,114 @@ export default function MissionController({ initialMission }: MissionControllerP
   // 组件卸载时清理
   useEffect(() => {
     return () => {
-      disconnectROS();
+      handleDisconnect();
     };
-  }, [disconnectROS]);
+  }, [handleDisconnect]);
+
+  // 监听实时数据显示开关变化
+  useEffect(() => {
+    if (!rosConnected || !rosRef.current || !missionRunning) return;
+
+    // 取消之前的订阅
+    if (gridMapTopicRef.current) {
+      gridMapTopicRef.current.unsubscribe();
+      gridMapTopicRef.current = null;
+    }
+
+    console.log('Subscribing to realtime data topics...');
+
+    // 订阅点云地图 (实际是 PointCloud2 类型)
+    if (showGridMap) {
+      const gridTopic = new ROSLIB.Topic({
+        ros: rosRef.current,
+        name: '/grid_map/occupancy_inflate',
+        messageType: 'sensor_msgs/PointCloud2'
+      });
+
+      gridTopic.subscribe((msg: {
+        header: {
+          stamp: { sec: number; nsec: number };
+          frame_id: string;
+        };
+        height: number;
+        width: number;
+        fields: Array<{ name: string; offset: number; datatype: number; count: number }>;
+        is_bigendian: boolean;
+        point_step: number;
+        row_step: number;
+        data: string | number[]; // 可能是 base64 字符串或数组
+        is_dense: boolean;
+      }) => {
+        try {
+          const timestamp = new Date(msg.header.stamp.sec * 1000 + msg.header.stamp.nsec / 1000000);
+          setLastGridMapAt(timestamp);
+
+          const numPoints = msg.width * msg.height;
+          
+          console.log(`Received point cloud map: ${numPoints} points, frame: ${msg.header.frame_id}`);
+          console.log('Fields:', msg.fields);
+          console.log('Data length:', msg.data ? msg.data.length : 0);
+          console.log('Point step:', msg.point_step);
+          console.log('Is bigendian:', msg.is_bigendian);
+          
+          // 解析PointCloud2二进制数据
+          // 找到 x, y, z 字段的偏移量
+          const xField = msg.fields.find(f => f.name === 'x');
+          const yField = msg.fields.find(f => f.name === 'y');
+          const zField = msg.fields.find(f => f.name === 'z');
+          
+          console.log('X field:', xField);
+          console.log('Y field:', yField);
+          console.log('Z field:', zField);
+          
+          if (xField && yField && zField && msg.data && msg.data.length > 0) {
+            try {
+              // 确保 data 是字符串类型
+              const dataString = typeof msg.data === 'string' ? msg.data : '';
+              if (dataString) {
+                const parsedData = createGridMapDataFromPointCloud2({
+                  header: msg.header,
+                  data: dataString,
+                  point_step: msg.point_step,
+                  row_step: msg.row_step,
+                  width: msg.width,
+                  height: msg.height,
+                });
+                
+                // 扩展为完整的 GridMapData
+                const fullGridMap: GridMapData = {
+                  frameId: parsedData.frameId,
+                  pointCount: parsedData.pointCount,
+                  data: Array.from(parsedData.data), // Float32Array -> number[]
+                  timestamp: new Date(msg.header.stamp.sec * 1000 + msg.header.stamp.nsec / 1000000),
+                  width: msg.width,
+                  height: msg.height,
+                  resolution: 0.1,
+                  origin: { x: 0, y: 0, z: 0 },
+                };
+                
+                setGridMapData(fullGridMap);
+              }
+            } catch (e) {
+              console.error('Failed to parse PointCloud2:', e);
+            }
+          } else {
+            console.log('Missing required fields or data:', {
+              hasXField: !!xField,
+              hasYField: !!yField,
+              hasZField: !!zField,
+              hasData: !!(msg.data && msg.data.length > 0)
+            });
+          }
+        } catch (error) {
+          console.error('Error processing grid map data:', error);
+        }
+      });
+
+      gridMapTopicRef.current = gridTopic;
+      console.log('Subscribed to /grid_map/occupancy_inflate (sensor_msgs/PointCloud2)');
+    }
+  }, [rosConnected, showGridMap, missionRunning]);
 
   const bboxText = bbox 
     ? `min(${bbox.min[0].toFixed(3)}, ${bbox.min[1].toFixed(3)}, ${bbox.min[2].toFixed(3)})  max(${bbox.max[0].toFixed(3)}, ${bbox.max[1].toFixed(3)}, ${bbox.max[2].toFixed(3)})`
@@ -475,7 +629,13 @@ export default function MissionController({ initialMission }: MissionControllerP
           <>
             <Separator />
             <div className="space-y-2">
-              <Label>无人机位置</Label>
+              <div className="flex items-center justify-between">
+                <Label>无人机位置</Label>
+                <div className="flex items-center gap-2">
+                  <Switch checked={followDrone} onCheckedChange={setFollowDrone} id="follow-drone" />
+                  <Label htmlFor="follow-drone" className="text-xs cursor-pointer">跟随</Label>
+                </div>
+              </div>
               <div className="text-xs font-mono space-y-1">
                 <div>X: {dronePosition.x.toFixed(3)} m</div>
                 <div>Y: {dronePosition.y.toFixed(3)} m</div>
@@ -523,17 +683,14 @@ export default function MissionController({ initialMission }: MissionControllerP
         <>
           <Separator />
           <div className="space-y-1 text-xs">
-            <Label>消息状态</Label>
+            <Label>ROS 消息状态</Label>
             <div className="text-muted-foreground">
-              Pose 消息: {msgCount}
+              位置消息: {msgCount}
               {lastPoseAt && <span>（最近: {lastPoseAt.toLocaleTimeString()}）</span>}
             </div>
             <div className="text-muted-foreground">
-              最近航点索引: {typeof lastWaypointIndex === 'number' ? lastWaypointIndex : '-'}
-              {lastWaypointAt && <span>（时间: {lastWaypointAt.toLocaleTimeString()}）</span>}
-            </div>
-            <div className="text-muted-foreground">
-              最近完成时间: {lastCompleteAt ? lastCompleteAt.toLocaleTimeString() : '-'}
+              点云地图: {gridMapData ? `${gridMapData.pointCount?.toLocaleString() || 0} 点` : '无数据'}
+              {lastGridMapAt && <span>（更新: {lastGridMapAt.toLocaleTimeString()}）</span>}
             </div>
           </div>
           </>
@@ -568,6 +725,13 @@ export default function MissionController({ initialMission }: MissionControllerP
             </div>
           </div>
 
+          <div className="flex items-center justify-between mt-2">
+            <div className="flex items-center gap-2">
+              <Switch checked={showSceneCloud} onCheckedChange={setShowSceneCloud} id="scene-cloud" />
+              <Label htmlFor="scene-cloud">场景点云</Label>
+            </div>
+          </div>
+
           <div className="space-y-2">
             <Label className="text-sm">着色模式</Label>
             <div className="flex gap-2 flex-wrap">
@@ -582,7 +746,24 @@ export default function MissionController({ initialMission }: MissionControllerP
             </div>
           </div>
 
-          {/* 航线显示与性能监控已移除 */}
+        </div>
+
+        <Separator />
+
+        {/* 点云地图显示 */}
+        <div className="space-y-3">
+          <Label>点云地图</Label>
+          <div className="flex items-center gap-2">
+            <Switch checked={showGridMap} onCheckedChange={setShowGridMap} id="grid-map" />
+            <Label htmlFor="grid-map">显示点云地图</Label>
+          </div>
+          {gridMapData && (
+            <div className="text-xs text-muted-foreground space-y-1">
+              <div>点数: {gridMapData.pointCount?.toLocaleString() || 0}</div>
+              <div>尺寸: {gridMapData.width} × {gridMapData.height}</div>
+              {gridMapData.frameId && <div>坐标系: {gridMapData.frameId}</div>}
+            </div>
+          )}
         </div>
 
         <Separator />
@@ -707,7 +888,7 @@ export default function MissionController({ initialMission }: MissionControllerP
                   <Button onClick={connectROS} disabled={rosConnected} className="flex-1">
                     连接
                   </Button>
-                  <Button onClick={disconnectROS} disabled={!rosConnected} variant="outline" className="flex-1">
+                  <Button onClick={handleDisconnect} disabled={!rosConnected} variant="outline" className="flex-1">
                     断开
                   </Button>
                 </div>
@@ -760,6 +941,7 @@ export default function MissionController({ initialMission }: MissionControllerP
             pointSize={pointSize}
             showGrid={showGrid}
             showAxes={showAxes}
+            showSceneCloud={showSceneCloud}
             colorMode={colorMode}
             onLoadedAction={handleLoaded}
             onLoadingChange={handleLoadingChange}
@@ -772,8 +954,13 @@ export default function MissionController({ initialMission }: MissionControllerP
             }}
             plannedDragPlane={plannedDragPlane}
             dronePosition={dronePosition}
+            followDrone={followDrone}
             waypoints={selectedMission?.waypoints}
             currentWaypointIndex={selectedMission?.currentWaypointIndex}
+            realtimeFrames={realtimeFrames}
+            showRealtimeCloud={showRealtimeCloud}
+            gridMapData={gridMapData}
+            showGridMap={showGridMap}
           />
         </div>
       </section>
