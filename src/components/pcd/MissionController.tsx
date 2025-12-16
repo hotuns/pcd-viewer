@@ -34,6 +34,7 @@ export default function MissionController({ initialMission, onBack }: MissionCon
   const [plannedPoints, setPlannedPoints] = useState<Array<{ x: number; y: number; z: number }>>([]);
   const [homePose, setHomePose] = useState<MissionHomePosition>(initialMission?.home ?? DEFAULT_HOME);
   const [followDrone, setFollowDrone] = useState(false);
+  const [selectedPathIndex, setSelectedPathIndex] = useState<number | null>(null);
   const canvasRef = useRef<PCDCanvasHandle | null>(null);
   const { updateMission: updateMissionDB } = useMissionDatabase();
   const { rosUrl, setRosUrl, rosConnected, rosRef, connectROS, disconnectROS } = useRosConnection();
@@ -85,6 +86,24 @@ export default function MissionController({ initialMission, onBack }: MissionCon
   const handleTrajectoryPointsChange = useCallback((points: Array<{ x: number; y: number; z: number; t?: number }>) => {
     setPlannedPoints(points.map((p) => ({ x: p.x, y: p.y, z: p.z })));
   }, []);
+  const handleCanvasPointsChange = useCallback((points: Array<{ x: number; y: number; z: number }>) => {
+    handleTrajectoryPointsChange(points);
+  }, [handleTrajectoryPointsChange]);
+
+  const isPlanning = selectedMission?.status === "planning";
+
+  useEffect(() => {
+    if (!plannedPoints || selectedPathIndex == null) return;
+    if (selectedPathIndex >= plannedPoints.length) {
+      setSelectedPathIndex(null);
+    }
+  }, [plannedPoints, selectedPathIndex]);
+
+  useEffect(() => {
+    if (!isPlanning) {
+      setSelectedPathIndex(null);
+    }
+  }, [isPlanning]);
 
   const decoratedWaypoints = useMemo<Waypoint[]>(() => {
     if (!plannedPoints || plannedPoints.length === 0) return [];
@@ -195,11 +214,30 @@ export default function MissionController({ initialMission, onBack }: MissionCon
                 <div className="space-y-4 pb-6">
                   <div className="text-xs font-semibold text-muted-foreground flex items-center gap-2">
                     <MapPin className="h-3.5 w-3.5" /> 航线编辑
+                    {selectedMission && (
+                      <div className="ml-auto flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant={isPlanning ? "outline" : "default"}
+                          className="h-7 text-xs"
+                          onClick={() => {
+                            if (!selectedMission) return;
+                            const nextStatus = isPlanning ? "ready" : "planning";
+                            void handleMissionUpdate({ ...selectedMission, status: nextStatus });
+                          }}
+                        >
+                          {isPlanning ? "完成规划" : "进入规划"}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                   <TrajectoryEditor
                     mission={currentMission}
                     onSaveAction={handleTrajectorySave}
                     onPointsChangeAction={handleTrajectoryPointsChange}
+                    editable={isPlanning}
+                    selectedIndex={selectedPathIndex}
+                    onSelectIndex={isPlanning ? setSelectedPathIndex : undefined}
                   />
                 </div>
               )}
@@ -213,6 +251,10 @@ export default function MissionController({ initialMission, onBack }: MissionCon
             source={currentMission?.scene}
             plannedPathPoints={plannedPoints}
             plannedPathVisible
+            plannedPathEditable={isPlanning}
+            onPlannedPointsChange={isPlanning ? handleCanvasPointsChange : undefined}
+            selectedPointIndex={selectedPathIndex}
+            onSelectPoint={isPlanning ? setSelectedPathIndex : undefined}
             waypoints={decoratedWaypoints}
             currentWaypointIndex={currentWaypointIndex}
             dronePosition={missionRuntime.dronePosition}

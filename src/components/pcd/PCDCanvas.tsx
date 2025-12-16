@@ -1,10 +1,10 @@
 "use client";
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, Suspense } from "react";
-import { Canvas, useThree, ThreeEvent } from "@react-three/fiber";
-import { Grid, OrbitControls, Line } from "@react-three/drei";
+import { Canvas, useThree } from "@react-three/fiber";
+import { Grid, OrbitControls, Line, TransformControls } from "@react-three/drei";
 import * as THREE from "three";
-import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
+import type { OrbitControls as OrbitControlsImpl, TransformControls as TransformControlsImpl } from "three-stdlib";
 import { PCDLoader } from "three/examples/jsm/loaders/PCDLoader.js";
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import type { Source, DronePosition, Waypoint } from "@/types/mission";
@@ -35,7 +35,8 @@ export type PCDCanvasProps = {
   plannedPointSize?: number; // 航点球体大小（半径）
   plannedPathEditable?: boolean; // 是否支持在 3D 中拖拽编辑
   onPlannedPointsChange?: (points: Array<{ x: number; y: number; z: number }>) => void; // 拖拽时回传
-  plannedDragPlane?: 'xy' | 'xz' | 'yz'; // 拖拽所用平面
+  selectedPointIndex?: number | null;
+  onSelectPoint?: (index: number | null) => void;
   dronePosition?: DronePosition | null; // 无人机位置和姿态
   followDrone?: boolean; // 视角跟随飞机
   waypoints?: Waypoint[]; // 航点状态信息
@@ -168,7 +169,7 @@ function SceneResetter({
 }
 
 export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PCDCanvas(
-  { source, pointSize = 0.01, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, voxelized = false, voxelSize = 0.05, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathEditable = false, onPlannedPointsChange, plannedDragPlane = 'xy', dronePosition, followDrone = false, waypoints, currentWaypointIndex },
+  { source, pointSize = 0.01, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, voxelized = false, voxelSize = 0.05, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathEditable = false, onPlannedPointsChange, selectedPointIndex, onSelectPoint, dronePosition, followDrone = false, waypoints, currentWaypointIndex },
   ref
 ) {
   const [geom, setGeom] = useState<THREE.BufferGeometry | null>(null);
@@ -209,31 +210,103 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
   const onLoadedRef = useRef<typeof onLoadedAction>(onLoadedAction);
   const onLoadingChangeRef = useRef<typeof onLoadingChange>(onLoadingChange);
   const onPlannedPointsChangeRef = useRef<typeof onPlannedPointsChange>(onPlannedPointsChange);
-  const dragPlaneTypeRef = useRef<typeof plannedDragPlane>(plannedDragPlane);
+  const pointRefs = useRef<Array<THREE.Mesh | null>>([]);
+  const plannedPointsRef = useRef<typeof plannedPathPoints>(plannedPathPoints);
+  const transformControlsRef = useRef<TransformControlsImpl | null>(null);
+  const [internalSelectedIdx, setInternalSelectedIdx] = useState<number | null>(null);
+  const selectedIdxRef = useRef<number | null>(null);
+  const isControlledSelection = typeof selectedPointIndex === "number" || selectedPointIndex === null;
+  const selectedIdx = isControlledSelection ? (selectedPointIndex ?? null) : internalSelectedIdx;
+  const setSelectedIdx = onSelectPoint ?? setInternalSelectedIdx;
+  const [pathVersion, setPathVersion] = useState(0);
+  useEffect(() => {
+    setPathVersion((v) => {
+      const next = v + 1;
+      console.debug("[PCDCanvas] path changed", plannedPathPoints?.length, "version", next);
+      return next;
+    });
+  }, [plannedPathPoints]);
   useEffect(() => { onLoadedRef.current = onLoadedAction; }, [onLoadedAction]);
   useEffect(() => { onLoadingChangeRef.current = onLoadingChange; }, [onLoadingChange]);
   useEffect(() => { onPlannedPointsChangeRef.current = onPlannedPointsChange; }, [onPlannedPointsChange]);
-  useEffect(() => { dragPlaneTypeRef.current = plannedDragPlane; }, [plannedDragPlane]);
-  const draggingIdx = useRef<number | null>(null);
-  const dragPlane = useRef<THREE.Plane | null>(null);
-  const fixedVal = useRef<number>(0);
-  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  useEffect(() => { plannedPointsRef.current = plannedPathPoints; }, [plannedPathPoints]);
+  useEffect(() => { selectedIdxRef.current = selectedIdx; }, [selectedIdx]);
+  useEffect(() => {
+    const length = plannedPathPoints?.length ?? 0;
+    pointRefs.current = pointRefs.current.slice(0, length);
+  }, [plannedPathPoints?.length]);
 
-  // Esc 取消选中（并终止拖拽）
+  // Esc 取消选中
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        // 取消选中和拖拽
-        draggingIdx.current = null;
-        dragPlane.current = null;
-        fixedVal.current = 0;
         setSelectedIdx(null);
-        if (controlsRef.current) controlsRef.current.enabled = true;
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [setSelectedIdx]);
+
+  useEffect(() => {
+    if (!plannedPathEditable) {
+      setSelectedIdx(null);
+    }
+  }, [plannedPathEditable, setSelectedIdx]);
+
+  useEffect(() => {
+    if (selectedIdx != null && (!plannedPathPoints || selectedIdx >= plannedPathPoints.length)) {
+      setSelectedIdx(null);
+    }
+  }, [plannedPathPoints, selectedIdx, setSelectedIdx]);
+
+  const transformControls = transformControlsRef.current;
+
+  useEffect(() => {
+    if (!transformControls) return;
+    console.debug("[GIZMO] register events");
+    const handleObjectChange = () => {
+      const idx = selectedIdxRef.current;
+      const pts = plannedPointsRef.current;
+      const object = transformControls.object;
+      if (!object || idx == null || !pts || idx < 0 || idx >= pts.length) return;
+      const pos = object.position;
+      const next = pts.map((pt, i) =>
+        i === idx ? { x: pos.x, y: pos.y, z: pos.z } : pt
+      );
+      plannedPointsRef.current = next;
+      console.debug("[GIZMO] updating point", idx, { x: pos.x, y: pos.y, z: pos.z });
+    };
+    const handleDraggingChanged = (event: { value: boolean }) => {
+      if (controlsRef.current) {
+        controlsRef.current.enabled = !event.value;
+      }
+      if (!event.value) {
+        const next = plannedPointsRef.current;
+        if (next) {
+          onPlannedPointsChangeRef.current?.(next);
+        }
+      }
+    };
+    transformControls.addEventListener("objectChange", handleObjectChange);
+    transformControls.addEventListener("dragging-changed", handleDraggingChanged);
+    return () => {
+      console.debug("[GIZMO] unregister events");
+      transformControls.removeEventListener("objectChange", handleObjectChange);
+      transformControls.removeEventListener("dragging-changed", handleDraggingChanged);
+    };
+  }, [transformControls]);
+
+  useEffect(() => {
+    if (!transformControls) return;
+    transformControls.detach();
+    if (plannedPathEditable && selectedIdx !== null) {
+      const target = pointRefs.current[selectedIdx];
+      if (target) {
+        console.debug("[GIZMO] attach to", selectedIdx, target.position);
+        transformControls.attach(target);
+      }
+    }
+  }, [plannedPathEditable, selectedIdx, plannedPathPoints, transformControls]);
 
   const registerFit = (fn: () => void) => {
     fitRef.current = fn;
@@ -541,46 +614,18 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           <primitive object={mesh} key={colorVersion} />
         )}
 
-        {/* 规划航线渲染：折线 + 航点球（可选编辑）*/}
+        {/* 规划航线渲染 + Gizmo 编辑 */}
         {plannedPathVisible && Array.isArray(plannedPathPoints) && plannedPathPoints.length > 0 && (
-          <group
-            onPointerMove={(e: ThreeEvent<PointerEvent>) => {
-              if (draggingIdx.current === null || !plannedPathEditable) return;
-              const plane = dragPlane.current;
-              const pts = plannedPathPoints;
-              if (!plane || !Array.isArray(pts) || pts.length === 0) return;
-              if (!e.ray) return;
-              const out = new THREE.Vector3();
-              if (!e.ray.intersectPlane(plane, out)) return;
-              const idx = draggingIdx.current;
-              if (idx === null || idx < 0 || idx >= pts.length) return;
-              const next = pts.slice();
-              const planeType = dragPlaneTypeRef.current;
-              if (planeType === 'xy') {
-                next[idx] = { x: out.x, y: out.y, z: fixedVal.current };
-              } else if (planeType === 'xz') {
-                next[idx] = { x: out.x, y: fixedVal.current, z: out.z };
-              } else { // yz
-                next[idx] = { x: fixedVal.current, y: out.y, z: out.z };
-              }
-              onPlannedPointsChangeRef.current?.(next);
-              e.stopPropagation();
-            }}
-            onPointerUp={(e: ThreeEvent<PointerEvent>) => {
-              if (draggingIdx.current !== null) {
-                draggingIdx.current = null; dragPlane.current = null; fixedVal.current = 0;
-                if (controlsRef.current) controlsRef.current.enabled = true;
-                e.stopPropagation();
-              }
-            }}
-          >
-            {/* 待完成路径段（使用灰色），若无状态信息则显示整条路径 */}
+          <group key={`path-${pathVersion}`}>
+            {/* 待完成路径段（灰色） */}
             {(() => {
+              console.debug("[LINE] render pending", pathVersion);
               if (plannedPathPoints.length < 2) return null;
               const hasStatus = Array.isArray(waypoints) && waypoints.length > 0;
               if (!hasStatus) {
                 return (
                   <Line
+                    key={`line-full-${pathVersion}`}
                     points={plannedPathPoints.map(p => [p.x, p.y, p.z]) as [number, number, number][]}
                     color="#94a3b8"
                     lineWidth={2}
@@ -598,6 +643,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
               if (pendingPoints.length < 2) return null;
               return (
                 <Line
+                  key={`line-pending-${pathVersion}-${pendingPoints.length}`}
                   points={pendingPoints}
                   color="#94a3b8"
                   lineWidth={2}
@@ -608,16 +654,17 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
                 />
               );
             })()}
-            {/* 已完成路径段：起点 -> 最后一个 completed 航点（叠加更醒目的绿色）*/}
+            {/* 已完成路径段（绿色） */}
             {(() => {
+              console.debug("[LINE] render completed", pathVersion);
               if (!Array.isArray(waypoints) || waypoints.length === 0) return null;
-              // 取最大 completed 索引
               const lastCompleted = waypoints.reduce((m, w) => (w.status === 'completed' ? Math.max(m, w.index ?? 0) : m), -1);
               const endIdx = Math.min(lastCompleted, plannedPathPoints.length - 1);
               if (endIdx >= 1) {
                 const pts = plannedPathPoints.slice(0, endIdx + 1).map(p => [p.x, p.y, p.z]) as [number, number, number][];
                 return (
                   <Line
+                    key={`line-completed-${pathVersion}-${endIdx}`}
                     points={pts}
                     color="#22c55e"
                     lineWidth={3}
@@ -630,327 +677,66 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
               }
               return null;
             })()}
-            {/* 航点 */}
+            {/* 航点球体 + 选中高亮 */}
             {plannedPathPoints.map((p, i) => {
-              // 获取航点状态和颜色
               const waypoint = waypoints?.find(w => w.index === i);
               const getWaypointColor = () => {
-                if (selectedIdx === i) return "#f59e0b"; // 选中时为橙色
-                
+                if (selectedIdx === i) return "#f59e0b";
                 if (waypoint) {
                   switch (waypoint.status) {
-                    case 'completed': return "#22c55e"; // 绿色 - 已完成
-                    case 'active': return "#f59e0b"; // 橙色 - 当前目标
-                    case 'pending': return "#60a5fa"; // 蓝色 - 待执行
-                    case 'skipped': return "#6b7280"; // 灰色 - 已跳过
+                    case 'completed': return "#22c55e";
+                    case 'active': return "#f59e0b";
+                    case 'pending': return "#60a5fa";
+                    case 'skipped': return "#6b7280";
+                    default: return "#60a5fa";
                   }
                 }
-                
-                // 默认颜色（编辑模式）
-                if (i === 0) return "#22c55e"; // 起点绿色
-                if (i === plannedPathPoints.length - 1) return "#ef4444"; // 终点红色
-                return "#60a5fa"; // 中间点蓝色
+                if (i === 0) return "#22c55e";
+                if (i === plannedPathPoints.length - 1) return "#ef4444";
+                return "#60a5fa";
               };
-              
               const waypointColor = getWaypointColor();
               const isActive = waypoint?.status === 'active' || currentWaypointIndex === i;
-              
               return (
                 <mesh
                   key={i}
+                  ref={(node) => { pointRefs.current[i] = node; }}
                   position={[p.x, p.y, p.z] as [number, number, number]}
-                  onDoubleClick={(e: ThreeEvent<MouseEvent>) => {
+                  onClick={(e) => {
                     if (!plannedPathEditable) return;
                     e.stopPropagation();
-                    // 双击当前小球：若已选中则取消选中；否则选中
+                    if (e.altKey) {
+                      const next = plannedPathPoints.slice();
+                      next.splice(i, 1);
+                      console.debug("[GIZMO] delete point", i);
+                      onPlannedPointsChangeRef.current?.(next);
+                      return;
+                    }
                     setSelectedIdx(prev => (prev === i ? null : i));
-                    // 结束可能的拖拽
-                    draggingIdx.current = null; dragPlane.current = null; fixedVal.current = 0;
-                    if (controlsRef.current) controlsRef.current.enabled = true;
-                  }}
-                  onPointerDown={(e: ThreeEvent<PointerEvent>) => {
-                  if (!plannedPathEditable) return;
-                    // 仅左键参与拖拽/删除；右键留给相机
-                    if (e.button !== 0) return;
-                  if (e.altKey) {
-                    // Alt+Click 删除该点
-                    e.stopPropagation();
-                    const next = plannedPathPoints.slice();
-                    next.splice(i, 1);
-                    onPlannedPointsChangeRef.current?.(next);
-                    return;
-                  }
-                  // 只有已双击选中的点，才能开始拖拽
-                  if (selectedIdx !== i) return;
-                  // 开始拖拽
-                  e.stopPropagation();
-                  draggingIdx.current = i;
-                  const planeType = dragPlaneTypeRef.current;
-                  if (planeType === 'xy') {
-                    fixedVal.current = p.z;
-                    dragPlane.current = new THREE.Plane(new THREE.Vector3(0, 0, 1), -p.z);
-                  } else if (planeType === 'xz') {
-                    fixedVal.current = p.y;
-                    dragPlane.current = new THREE.Plane(new THREE.Vector3(0, 1, 0), -p.y);
-                  } else { // yz
-                    fixedVal.current = p.x;
-                    dragPlane.current = new THREE.Plane(new THREE.Vector3(1, 0, 0), -p.x);
-                  }
-                  if (controlsRef.current) controlsRef.current.enabled = false;
                   }}
                 >
-                <sphereGeometry args={[Math.max(0.001, plannedPointSize * (isActive ? 1.3 : 1)), 16, 16]} />
-                <meshStandardMaterial
-                  color={waypointColor}
-                  emissive={selectedIdx === i || isActive ? new THREE.Color(waypointColor) : new THREE.Color('black')}
-                  emissiveIntensity={selectedIdx === i ? 0.3 : (isActive ? 0.2 : 0)}
-                />
+                  <sphereGeometry args={[Math.max(0.001, plannedPointSize * (isActive ? 1.3 : 1)), 16, 16]} />
+                  <meshStandardMaterial
+                    color={waypointColor}
+                    emissive={selectedIdx === i || isActive ? new THREE.Color(waypointColor) : new THREE.Color('black')}
+                    emissiveIntensity={selectedIdx === i ? 0.3 : (isActive ? 0.2 : 0)}
+                  />
                 </mesh>
               );
             })}
           </group>
         )}
 
-        {/* 编辑模式下：在参考平面上 Shift+点击添加新点（参考平面按拖拽平面选择，固定坐标取末点或 0） */}
-        {plannedPathVisible && plannedPathEditable && draggingIdx.current === null && (
-          (() => {
-            const last = plannedPathPoints && plannedPathPoints.length > 0 ? plannedPathPoints[plannedPathPoints.length - 1] : { x: 0, y: 0, z: 0 };
-            const planeType = dragPlaneTypeRef.current;
-            if (planeType === 'xy') {
-              return (
-                <mesh
-                  position={[0, 0, last.z] as [number, number, number]}
-                  onPointerDown={(e: ThreeEvent<PointerEvent>) => {
-                    if (!e.shiftKey) return; e.stopPropagation();
-                    const p = e.point; const next = (plannedPathPoints ?? []).slice();
-                    next.push({ x: p.x, y: p.y, z: last.z });
-                    onPlannedPointsChangeRef.current?.(next);
-                  }}
-                >
-                  <planeGeometry args={[10000, 10000]} />
-                  <meshBasicMaterial color={"#ffffff"} transparent opacity={0.0} depthWrite={false} />
-                </mesh>
-              );
-            } else if (planeType === 'xz') {
-              return (
-                <mesh
-                  position={[0, last.y, 0] as [number, number, number]}
-                  rotation={[-Math.PI / 2, 0, 0]}
-                  onPointerDown={(e: ThreeEvent<PointerEvent>) => {
-                    if (!e.shiftKey) return; e.stopPropagation();
-                    const p = e.point; const next = (plannedPathPoints ?? []).slice();
-                    next.push({ x: p.x, y: last.y, z: p.z });
-                    onPlannedPointsChangeRef.current?.(next);
-                  }}
-                >
-                  <planeGeometry args={[10000, 10000]} />
-                  <meshBasicMaterial color={"#ffffff"} transparent opacity={0.0} depthWrite={false} />
-                </mesh>
-              );
-            } else {
-              return (
-                <mesh
-                  position={[last.x, 0, 0] as [number, number, number]}
-                  rotation={[0, Math.PI / 2, 0]}
-                  onPointerDown={(e: ThreeEvent<PointerEvent>) => {
-                    if (!e.shiftKey) return; e.stopPropagation();
-                    const p = e.point; const next = (plannedPathPoints ?? []).slice();
-                    next.push({ x: last.x, y: p.y, z: p.z });
-                    onPlannedPointsChangeRef.current?.(next);
-                  }}
-                >
-                  <planeGeometry args={[10000, 10000]} />
-                  <meshBasicMaterial color={"#ffffff"} transparent opacity={0.0} depthWrite={false} />
-                </mesh>
-              );
-            }
-          })()
-        )}
-
-        {/* 可视化当前拖拽平面（仅网格可见，用于拖拽捕获）*/}
-        {plannedPathVisible && plannedPathEditable && (
-          (() => {
-            const last = plannedPathPoints && plannedPathPoints.length > 0 ? plannedPathPoints[plannedPathPoints.length - 1] : { x: 0, y: 0, z: 0 };
-            const planeType = dragPlaneTypeRef.current;
-            const size = 2000;
-            if (planeType === 'xy') {
-              const z = draggingIdx.current !== null ? fixedVal.current : last.z;
-              return (
-                <mesh
-                  position={[0, 0, z] as [number, number, number]}
-                  onPointerDown={(e: ThreeEvent<PointerEvent>) => {
-                    if (!plannedPathEditable) return;
-                    if (e.button !== 0) return; // 右键给相机
-                    if (selectedIdx === null) return; // 未选中则不进入拖拽
-                    const idx = selectedIdx;
-                    if (!plannedPathPoints || idx < 0 || idx >= plannedPathPoints.length) return;
-                    e.stopPropagation();
-                    draggingIdx.current = idx;
-                    const pt = plannedPathPoints[idx];
-                    fixedVal.current = pt.z;
-                    dragPlane.current = new THREE.Plane(new THREE.Vector3(0, 0, 1), -pt.z);
-                    if (controlsRef.current) controlsRef.current.enabled = false;
-                  }}
-                  onPointerMove={(e: ThreeEvent<PointerEvent>) => {
-                    if (draggingIdx.current === null || !plannedPathEditable) return;
-                    const plane = dragPlane.current;
-                    const pts = plannedPathPoints;
-                    if (!plane || !Array.isArray(pts) || pts.length === 0) return;
-                    if (!e.ray) return;
-                    const out = new THREE.Vector3();
-                    if (!e.ray.intersectPlane(plane, out)) return;
-                    const idx = draggingIdx.current;
-                    if (idx === null || idx < 0 || idx >= pts.length) return;
-                    const next = pts.slice();
-                    const pt = { x: out.x, y: out.y, z: fixedVal.current };
-                    next[idx] = pt;
-                    onPlannedPointsChangeRef.current?.(next);
-                    e.stopPropagation();
-                  }}
-                  onPointerUp={(e: ThreeEvent<PointerEvent>) => {
-                    if (draggingIdx.current !== null) {
-                      draggingIdx.current = null; dragPlane.current = null; fixedVal.current = 0;
-                      if (controlsRef.current) controlsRef.current.enabled = true;
-                      e.stopPropagation();
-                    }
-                  }}
-                  onPointerLeave={(e: ThreeEvent<PointerEvent>) => {
-                    if (draggingIdx.current !== null) {
-                      draggingIdx.current = null; dragPlane.current = null; fixedVal.current = 0;
-                      if (controlsRef.current) controlsRef.current.enabled = true;
-                      e.stopPropagation();
-                    }
-                  }}
-                >
-                  <planeGeometry args={[size, size]} />
-                  {/* 仅保留网格可视，平面本体透明 */}
-                  <meshBasicMaterial color={"#22d3ee"} transparent opacity={0.0} depthWrite={false} side={THREE.DoubleSide} />
-                  {/* 网格线（通过 gridHelper 旋转到 XY） */}
-                  <primitive
-                    object={new THREE.GridHelper(size, 50, new THREE.Color('#06b6d4'), new THREE.Color('#67e8f9'))}
-                    rotation={[Math.PI / 2, 0, 0]}
-                    position={[0, 0, 0]}
-                  />
-                </mesh>
-              );
-            } else if (planeType === 'xz') {
-              const y = draggingIdx.current !== null ? fixedVal.current : last.y;
-              return (
-                <mesh
-                  position={[0, y, 0] as [number, number, number]}
-                  rotation={[-Math.PI/2,0,0]}
-                  onPointerDown={(e: ThreeEvent<PointerEvent>) => {
-                    if (!plannedPathEditable) return;
-                    if (e.button !== 0) return;
-                    if (selectedIdx === null) return;
-                    const idx = selectedIdx;
-                    if (!plannedPathPoints || idx < 0 || idx >= plannedPathPoints.length) return;
-                    e.stopPropagation();
-                    draggingIdx.current = idx;
-                    const pt = plannedPathPoints[idx];
-                    fixedVal.current = pt.y;
-                    dragPlane.current = new THREE.Plane(new THREE.Vector3(0, 1, 0), -pt.y);
-                    if (controlsRef.current) controlsRef.current.enabled = false;
-                  }}
-                  onPointerMove={(e: ThreeEvent<PointerEvent>) => {
-                    if (draggingIdx.current === null || !plannedPathEditable) return;
-                    const plane = dragPlane.current;
-                    const pts = plannedPathPoints;
-                    if (!plane || !Array.isArray(pts) || pts.length === 0) return;
-                    if (!e.ray) return;
-                    const out = new THREE.Vector3();
-                    if (!e.ray.intersectPlane(plane, out)) return;
-                    const idx = draggingIdx.current;
-                    if (idx === null || idx < 0 || idx >= pts.length) return;
-                    const next = pts.slice();
-                    const pt = { x: out.x, y: fixedVal.current, z: out.z };
-                    next[idx] = pt;
-                    onPlannedPointsChangeRef.current?.(next);
-                    e.stopPropagation();
-                  }}
-                  onPointerUp={(e: ThreeEvent<PointerEvent>) => {
-                    if (draggingIdx.current !== null) {
-                      draggingIdx.current = null; dragPlane.current = null; fixedVal.current = 0;
-                      if (controlsRef.current) controlsRef.current.enabled = true;
-                      e.stopPropagation();
-                    }
-                  }}
-                  onPointerLeave={(e: ThreeEvent<PointerEvent>) => {
-                    if (draggingIdx.current !== null) {
-                      draggingIdx.current = null; dragPlane.current = null; fixedVal.current = 0;
-                      if (controlsRef.current) controlsRef.current.enabled = true;
-                      e.stopPropagation();
-                    }
-                  }}
-                >
-                  <planeGeometry args={[size, size]} />
-                  {/* 仅保留网格可视，平面本体透明 */}
-                  <meshBasicMaterial color={"#22d3ee"} transparent opacity={0.0} depthWrite={false} side={THREE.DoubleSide} />
-                  <primitive
-                    object={new THREE.GridHelper(size, 50, new THREE.Color('#06b6d4'), new THREE.Color('#67e8f9'))}
-                  />
-                </mesh>
-              );
-            } else {
-              const x = draggingIdx.current !== null ? fixedVal.current : last.x;
-              return (
-                <mesh
-                  position={[x, 0, 0] as [number, number, number]}
-                  rotation={[0,Math.PI/2,0]}
-                  onPointerDown={(e: ThreeEvent<PointerEvent>) => {
-                    if (!plannedPathEditable) return;
-                    if (e.button !== 0) return;
-                    if (selectedIdx === null) return;
-                    const idx = selectedIdx;
-                    if (!plannedPathPoints || idx < 0 || idx >= plannedPathPoints.length) return;
-                    e.stopPropagation();
-                    draggingIdx.current = idx;
-                    const pt = plannedPathPoints[idx];
-                    fixedVal.current = pt.x;
-                    dragPlane.current = new THREE.Plane(new THREE.Vector3(1, 0, 0), -pt.x);
-                    if (controlsRef.current) controlsRef.current.enabled = false;
-                  }}
-                  onPointerMove={(e: ThreeEvent<PointerEvent>) => {
-                    if (draggingIdx.current === null || !plannedPathEditable) return;
-                    const plane = dragPlane.current;
-                    const pts = plannedPathPoints;
-                    if (!plane || !Array.isArray(pts) || pts.length === 0) return;
-                    if (!e.ray) return;
-                    const out = new THREE.Vector3();
-                    if (!e.ray.intersectPlane(plane, out)) return;
-                    const idx = draggingIdx.current;
-                    if (idx === null || idx < 0 || idx >= pts.length) return;
-                    const next = pts.slice();
-                    const pt = { x: fixedVal.current, y: out.y, z: out.z };
-                    next[idx] = pt;
-                    onPlannedPointsChangeRef.current?.(next);
-                    e.stopPropagation();
-                  }}
-                  onPointerUp={(e: ThreeEvent<PointerEvent>) => {
-                    if (draggingIdx.current !== null) {
-                      draggingIdx.current = null; dragPlane.current = null; fixedVal.current = 0;
-                      if (controlsRef.current) controlsRef.current.enabled = true;
-                      e.stopPropagation();
-                    }
-                  }}
-                  onPointerLeave={(e: ThreeEvent<PointerEvent>) => {
-                    if (draggingIdx.current !== null) {
-                      draggingIdx.current = null; dragPlane.current = null; fixedVal.current = 0;
-                      if (controlsRef.current) controlsRef.current.enabled = true;
-                      e.stopPropagation();
-                    }
-                  }}
-                >
-                  <planeGeometry args={[size, size]} />
-                  {/* 仅保留网格可视，平面本体透明 */}
-                  <meshBasicMaterial color={"#22d3ee"} transparent opacity={0.0} depthWrite={false} side={THREE.DoubleSide} />
-                  <primitive
-                    object={new THREE.GridHelper(size, 50, new THREE.Color('#06b6d4'), new THREE.Color('#67e8f9'))}
-                  />
-                </mesh>
-              );
-            }
-          })()
+        {plannedPathEditable && (
+          <TransformControls
+            ref={transformControlsRef}
+            enabled={plannedPathEditable && selectedIdx !== null && !!pointRefs.current[selectedIdx ?? 0]}
+            mode="translate"
+            showX
+            showY
+            showZ
+            size={0.8}
+          />
         )}
 
         {/* 无人机渲染 */}
@@ -974,40 +760,12 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         <CameraOrienter bbox={bbox} plannedPoints={plannedPathPoints} controlsRef={controlsRef} registerOrient={registerOrient} />
         <CameraFollower dronePosition={dronePosition ?? null} followDrone={followDrone} controlsRef={controlsRef} />
       </Canvas>
-      {plannedPathVisible && plannedPathEditable && (
-        (() => {
-          const last = plannedPathPoints && plannedPathPoints.length > 0 ? plannedPathPoints[plannedPathPoints.length - 1] : { x: 0, y: 0, z: 0 };
-          const planeType = dragPlaneTypeRef.current;
-          let planeLabel = "";
-          if (planeType === 'xy') {
-            const z = draggingIdx.current !== null ? fixedVal.current : last.z;
-            planeLabel = `XY, Z=${z.toFixed(2)}`;
-          } else if (planeType === 'xz') {
-            const y = draggingIdx.current !== null ? fixedVal.current : last.y;
-            planeLabel = `XZ, Y=${y.toFixed(2)}`;
-          } else {
-            const x = draggingIdx.current !== null ? fixedVal.current : last.x;
-            planeLabel = `YZ, X=${x.toFixed(2)}`;
-          }
-          // 选中点坐标（若有选中）
-          let pointLabel: string | null = null;
-          if (typeof selectedIdx === 'number' && plannedPathPoints && selectedIdx >= 0 && selectedIdx < plannedPathPoints.length) {
-            const pt = plannedPathPoints[selectedIdx];
-            pointLabel = `P${selectedIdx}: X=${pt.x.toFixed(3)}, Y=${pt.y.toFixed(3)}, Z=${pt.z.toFixed(3)}`;
-          }
-          return (
-            <div style={{ position: 'absolute', right: 12, bottom: 12, pointerEvents: 'none', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-              <div style={{ background: 'rgba(34,211,238,0.85)', color: '#0b1324', padding: '4px 8px', borderRadius: 8, fontSize: 12, fontFamily: 'monospace', boxShadow: '0 2px 6px rgba(0,0,0,0.25)' }}>
-                {planeLabel}
-              </div>
-              {pointLabel && (
-                <div style={{ background: 'rgba(17,24,39,0.85)', color: '#e5e7eb', padding: '4px 8px', borderRadius: 8, fontSize: 12, fontFamily: 'monospace', boxShadow: '0 2px 6px rgba(0,0,0,0.25)' }}>
-                  {pointLabel}
-                </div>
-              )}
-            </div>
-          );
-        })()
+      {plannedPathEditable && selectedIdx == null && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+          <div className="bg-background/90 px-3 py-1 rounded border border-border/50 shadow">
+            选中航点后可拖动 Gizmo 调整位置
+          </div>
+        </div>
       )}
     </div>
   );

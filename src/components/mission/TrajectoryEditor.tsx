@@ -25,11 +25,17 @@ export default function TrajectoryEditor({
   onSaveAction,
   onPointsChangeAction,
   externalPoints,
+  editable = true,
+  selectedIndex,
+  onSelectIndex,
 }: {
   mission: Mission;
   onSaveAction: (file: File, jsonText: string) => void;
   onPointsChangeAction?: (points: Waypoint[]) => void;
   externalPoints?: Array<{ x: number; y: number; z: number }>;
+  editable?: boolean;
+  selectedIndex?: number | null;
+  onSelectIndex?: (index: number | null) => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [meta, setMeta] = useState<{ name?: string; coord?: string; note?: string }>({});
@@ -87,17 +93,22 @@ export default function TrajectoryEditor({
     return () => { cancelled = true; };
   }, [mission.trajectory, onPointsChangeAction]);
 
+  const isEditable = editable !== false;
+
   const addPoint = () => {
+    if (!isEditable) return;
     const next = [...points, { x: 0, y: 0, z: 0, t: (points.at(-1)?.t ?? -1) + 1 }];
     setPoints(next);
     onPointsChangeAction?.(next);
   };
   const removePoint = (idx: number) => {
+    if (!isEditable) return;
     const next = points.filter((_, i) => i !== idx);
     setPoints(next);
     onPointsChangeAction?.(next);
   };
   const move = (idx: number, dir: -1 | 1) => {
+    if (!isEditable) return;
     const j = idx + dir;
     if (j < 0 || j >= points.length) return;
     const arr = points.slice();
@@ -107,12 +118,14 @@ export default function TrajectoryEditor({
   };
 
   const save = () => {
+    if (!isEditable) return;
     const json = JSON.stringify({ meta: { name: meta.name ?? mission.name, coord: meta.coord ?? "local-xyz", note: meta.note ?? "" }, points }, null, 2);
     const file = new File([json], `trajectory-${Date.now()}.json`, { type: "application/json" });
     onSaveAction(file, json);
   };
 
   const handleImport = async (file: File) => {
+    if (!isEditable) return;
     try {
       const text = await file.text();
       const { meta: nextMeta, points: nextPoints } = parseTrajectoryJson(text);
@@ -149,11 +162,17 @@ export default function TrajectoryEditor({
             </p>
           </div>
         </div>
-        <Button size="sm" onClick={addPoint} className="h-8 gap-1">
+        <Button size="sm" onClick={addPoint} className="h-8 gap-1" disabled={!isEditable}>
           <Plus className="w-3.5 h-3.5" />
           <span className="hidden sm:inline">新增点</span>
         </Button>
       </div>
+
+      {!isEditable && (
+        <div className="text-[11px] text-amber-600 bg-amber-100/80 rounded-md px-3 py-2 border border-amber-200">
+          当前任务未进入“规划中”状态，点击「进入规划」后即可编辑航线。
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-3 shrink-0 p-3 bg-muted/30 rounded-lg border border-border/50">
         <div className="space-y-1">
@@ -163,6 +182,7 @@ export default function TrajectoryEditor({
             value={meta.name ?? ""} 
             onChange={(e) => setMeta({ ...meta, name: e.target.value })} 
             placeholder="航线名称"
+            disabled={!isEditable}
           />
         </div>
         <div className="space-y-1">
@@ -172,6 +192,7 @@ export default function TrajectoryEditor({
             value={meta.coord ?? "local-xyz"} 
             onChange={(e) => setMeta({ ...meta, coord: e.target.value })} 
             placeholder="local-xyz"
+            disabled={!isEditable}
           />
         </div>
         <div className="col-span-2 space-y-1">
@@ -181,6 +202,7 @@ export default function TrajectoryEditor({
             value={meta.note ?? ""} 
             onChange={(e) => setMeta({ ...meta, note: e.target.value })} 
             placeholder="添加备注信息..."
+            disabled={!isEditable}
           />
         </div>
       </div>
@@ -194,7 +216,11 @@ export default function TrajectoryEditor({
         <ScrollArea className="flex-1">
           <div className="divide-y divide-border/50">
             {points.map((p, i) => (
-              <div key={i} className="grid grid-cols-[40px_1fr_100px] gap-2 p-2 items-center hover:bg-muted/30 transition-colors group">
+              <div
+                key={i}
+                className={`grid grid-cols-[40px_1fr_100px] gap-2 p-2 items-center transition-colors group cursor-pointer ${selectedIndex === i ? "bg-primary/10 border border-primary/30 rounded-md" : "hover:bg-muted/30"}`}
+                onClick={() => onSelectIndex?.(i)}
+              >
                 <div className="text-xs text-muted-foreground text-center font-mono">{i + 1}</div>
                 <div className="space-y-1">
                   <div className="text-xs font-mono text-foreground">
@@ -213,7 +239,7 @@ export default function TrajectoryEditor({
                     variant="ghost" 
                     className="h-6 w-6" 
                     onClick={() => move(i, -1)} 
-                    disabled={i === 0}
+                    disabled={i === 0 || !isEditable}
                     title="上移"
                   >
                     <ArrowUp className="w-3 h-3" />
@@ -223,7 +249,7 @@ export default function TrajectoryEditor({
                     variant="ghost" 
                     className="h-6 w-6" 
                     onClick={() => move(i, 1)} 
-                    disabled={i === points.length - 1}
+                    disabled={i === points.length - 1 || !isEditable}
                     title="下移"
                   >
                     <ArrowDown className="w-3 h-3" />
@@ -233,6 +259,7 @@ export default function TrajectoryEditor({
                     variant="ghost" 
                     className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10" 
                     onClick={() => removePoint(i)}
+                    disabled={!isEditable}
                     title="删除"
                   >
                     <Trash2 className="w-3 h-3" />
@@ -244,7 +271,7 @@ export default function TrajectoryEditor({
               <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
                 <MapPin className="w-8 h-8 opacity-20" />
                 <p className="text-xs">暂无航点数据</p>
-                <Button variant="outline" size="sm" onClick={addPoint} className="mt-2 h-7 text-xs">
+                <Button variant="outline" size="sm" onClick={addPoint} className="mt-2 h-7 text-xs" disabled={!isEditable}>
                   添加第一个点
                 </Button>
               </div>
@@ -258,7 +285,8 @@ export default function TrajectoryEditor({
           variant="outline" 
           size="sm" 
           className="flex-1 h-8 text-xs gap-1.5"
-          onClick={() => fileInputRef.current?.click()}
+          onClick={() => isEditable && fileInputRef.current?.click()}
+          disabled={!isEditable}
         >
           <Upload className="w-3.5 h-3.5" />
           导入 JSON
@@ -283,7 +311,7 @@ export default function TrajectoryEditor({
           size="sm" 
           className="flex-1 h-8 text-xs gap-1.5"
           onClick={save} 
-          disabled={!hasTrajectory && points.length === 0}
+          disabled={!isEditable || (!hasTrajectory && points.length === 0)}
         >
           <Save className="w-3.5 h-3.5" />
           保存更改
