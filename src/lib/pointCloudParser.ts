@@ -41,7 +41,7 @@ export function parsePointCloud2Data(
       if (isFinite(x) && isFinite(y) && isFinite(z)) {
         points.push(x, y, z);
       }
-    } catch (e) {
+    } catch {
       // 忽略解析错误的点
       continue;
     }

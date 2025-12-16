@@ -15,8 +15,9 @@ export function DroneModel({ position, orientation }: DroneModelProps) {
   const clonedScene = scene.clone();
   
   // 遍历所有材质，确保它们能正确渲染
-  clonedScene.traverse((child) => {
-    if (child instanceof THREE.Mesh && child.material) {
+  clonedScene.traverse((obj) => {
+    const child = obj as THREE.Mesh;
+    if (child.isMesh && child.material) {
       // 如果是标准材质
       if (child.material instanceof THREE.MeshStandardMaterial) {
         child.material.needsUpdate = true;
@@ -24,9 +25,16 @@ export function DroneModel({ position, orientation }: DroneModelProps) {
         // 提升材质亮度，确保可见
         child.material.toneMapped = false;
         
+        // 增加金属感和光泽度，让模型更醒目
+        child.material.roughness = Math.min(child.material.roughness, 0.5);
+        child.material.metalness = Math.max(child.material.metalness, 0.3);
+        
         // 如果有发光贴图，增强发光强度
         if (child.material.emissiveMap) {
-          child.material.emissiveIntensity = 2.5;
+          child.material.emissiveIntensity = 3.0;
+        } else if (child.material.emissive) {
+          // 如果没有发光贴图但有发光颜色，增强一下
+          child.material.emissiveIntensity = 0.5;
         }
       }
       

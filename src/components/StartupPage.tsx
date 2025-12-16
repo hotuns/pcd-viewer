@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Mission, MissionStatus } from "@/types/mission";
+import { useMissionDatabase } from "@/hooks/useMissionDatabase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { PlusCircle, Trash2, Play, FileText, Map, Clock, CheckCircle2 } from "lucide-react";
+import { PlusCircle, Trash2, Play, FileText, Map, Clock, CheckCircle2, RefreshCw, Database, BarChart, ArrowRight, LayoutGrid } from "lucide-react";
 
 // 状态显示辅助函数
 const getStatusText = (status: MissionStatus): string => {
@@ -27,7 +27,7 @@ const getStatusText = (status: MissionStatus): string => {
 const getStatusColor = (status: MissionStatus): string => {
   const colorMap = {
     draft: 'secondary',
-    configured: 'default',
+    configured: 'secondary',
     planning: 'outline',
     ready: 'default',
     running: 'destructive',
@@ -40,77 +40,71 @@ const getStatusColor = (status: MissionStatus): string => {
 
 const getStatusIcon = (status: MissionStatus) => {
   const iconMap = {
-    draft: <FileText className="h-4 w-4" />,
-    configured: <Map className="h-4 w-4" />,
-    planning: <FileText className="h-4 w-4" />,
-    ready: <Play className="h-4 w-4" />,
-    running: <Clock className="h-4 w-4" />,
-    paused: <Clock className="h-4 w-4" />,
-    completed: <CheckCircle2 className="h-4 w-4" />,
-    failed: <FileText className="h-4 w-4" />
+    draft: <FileText className="h-3.5 w-3.5" />,
+    configured: <Map className="h-3.5 w-3.5" />,
+    planning: <FileText className="h-3.5 w-3.5" />,
+    ready: <Play className="h-3.5 w-3.5" />,
+    running: <Clock className="h-3.5 w-3.5" />,
+    paused: <Clock className="h-3.5 w-3.5" />,
+    completed: <CheckCircle2 className="h-3.5 w-3.5" />,
+    failed: <FileText className="h-3.5 w-3.5" />
   };
   return iconMap[status];
 };
+
+interface MissionRow {
+  id: string;
+  name: string;
+  status: MissionStatus;
+  sceneUrl?: string;
+  trajectoryUrl?: string;
+  createdAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+interface StatsRow {
+  total: number;
+  draft: number;
+  configured: number;
+  planning: number;
+  ready: number;
+  running: number;
+  paused: number;
+  completed: number;
+  failed: number;
+}
 
 interface StartupPageProps {
   onMissionSelect: (mission: Mission) => void;
 }
 
 export default function StartupPage({ onMissionSelect }: StartupPageProps) {
-  const [missions, setMissions] = useState<Mission[]>([
-    {
-      id: "demo_flight",
-      name: "演示飞行任务",
-      status: "ready",
-      createdAt: new Date("2024-11-02"),
-      scene: { type: "url", url: "/rosbag_play.pcd" },
-      trajectory: { type: "url", url: "/example-planned-path.json" },
-    },
-    {
-      id: "completed_mission",
-      name: "已完成的巡检任务",
-      status: "completed",
-      createdAt: new Date("2024-10-28"),
-      completedAt: new Date("2024-10-28T14:30:00"),
-      scene: { type: "url", url: "/rosbag_play.pcd" },
-      trajectory: { type: "url", url: "/example-planned-path.json" },
-      waypoints: [
-        { id: "wp1", x: 0, y: 0, z: 1, status: "completed", index: 0, completedAt: new Date() },
-        { id: "wp2", x: 5, y: 0, z: 1, status: "completed", index: 1, completedAt: new Date() },
-        { id: "wp3", x: 5, y: 5, z: 1, status: "completed", index: 2, completedAt: new Date() },
-      ]
-    }
-  ]);
-  
+  const [missions, setMissions] = useState<MissionRow[]>([]);
+  const [stats, setStats] = useState<StatsRow | null>(null);
   const [newMissionName, setNewMissionName] = useState("");
   const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
+  const { getAllMissions, getMissionStats, saveMission, deleteMission, loading, error } = useMissionDatabase();
 
-  // 从localStorage加载任务
-  useEffect(() => {
-    const savedMissions = localStorage.getItem('pcd-viewer-missions');
-    if (savedMissions) {
-      try {
-        const parsed = JSON.parse(savedMissions);
-        const missionsWithDates = parsed.map((m: Mission & { createdAt: string; completedAt?: string; startedAt?: string }) => ({
-          ...m,
-          createdAt: new Date(m.createdAt),
-          completedAt: m.completedAt ? new Date(m.completedAt) : undefined,
-          startedAt: m.startedAt ? new Date(m.startedAt) : undefined,
-        }));
-        setMissions(missionsWithDates);
-      } catch (error) {
-        console.error('Failed to load missions from localStorage:', error);
-      }
+  // 加载数据
+  const loadData = useCallback(async () => {
+    try {
+      const [missionsData, statsData] = await Promise.all([
+        getAllMissions(),
+        getMissionStats()
+      ]);
+      setMissions(missionsData as MissionRow[]);
+      setStats(statsData as StatsRow);
+    } catch (err) {
+      console.error("Failed to load missions:", err);
     }
-  }, []);
+  }, [getAllMissions, getMissionStats]);
 
-  // 保存任务到localStorage
-  const saveMissions = (updatedMissions: Mission[]) => {
-    setMissions(updatedMissions);
-    localStorage.setItem('pcd-viewer-missions', JSON.stringify(updatedMissions));
-  };
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
-  const createMission = () => {
+  const createMission = async () => {
     if (!newMissionName.trim()) {
       alert("请输入任务名称");
       return;
@@ -123,24 +117,47 @@ export default function StartupPage({ onMissionSelect }: StartupPageProps) {
       createdAt: new Date(),
     };
     
-    saveMissions([...missions, newMission]);
+    await saveMission(newMission);
     setNewMissionName("");
+    await loadData();
   };
 
-  const deleteMission = (id: string) => {
+  const handleDeleteMission = async (id: string) => {
     if (confirm("确定要删除这个任务吗？")) {
-      saveMissions(missions.filter(m => m.id !== id));
+      await deleteMission(id);
       if (selectedMissionId === id) {
         setSelectedMissionId(null);
       }
+      await loadData();
     }
   };
 
-  const selectMission = (mission: Mission) => {
+  const selectMission = (missionRow: MissionRow) => {
+    // 转换数据库格式为 Mission 格式
+    const mission: Mission = {
+      id: missionRow.id,
+      name: missionRow.name,
+      status: missionRow.status,
+      createdAt: (() => {
+        const parsed = new Date(missionRow.createdAt);
+        return isNaN(parsed.getTime()) ? new Date() : parsed;
+      })(),
+      startedAt: missionRow.startedAt ? (() => {
+        const parsed = new Date(missionRow.startedAt!);
+        return isNaN(parsed.getTime()) ? undefined : parsed;
+      })() : undefined,
+      completedAt: missionRow.completedAt ? (() => {
+        const parsed = new Date(missionRow.completedAt!);
+        return isNaN(parsed.getTime()) ? undefined : parsed;
+      })() : undefined,
+      scene: missionRow.sceneUrl ? { type: "url", url: missionRow.sceneUrl } : undefined,
+      trajectory: missionRow.trajectoryUrl ? { type: "url", url: missionRow.trajectoryUrl } : undefined,
+    };
     onMissionSelect(mission);
   };
 
   const formatDate = (date: Date) => {
+    if (isNaN(date.getTime())) return "未知日期";
     return date.toLocaleDateString('zh-CN', {
       year: 'numeric',
       month: 'short',
@@ -150,27 +167,23 @@ export default function StartupPage({ onMissionSelect }: StartupPageProps) {
     });
   };
 
-  const getMissionDescription = (mission: Mission) => {
-    const parts = [];
-    
-    if (mission.scene) parts.push("✓ 场景");
-    else parts.push("✗ 场景");
-    
-    if (mission.trajectory) parts.push("✓ 航线");
-    else parts.push("✗ 航线");
-    
-    if (mission.waypoints) {
-      const completed = mission.waypoints.filter(w => w.status === 'completed').length;
-      parts.push(`${completed}/${mission.waypoints.length} 完成`);
-    }
-    
-    return parts.join(" | ");
+  const getMissionDescription = (mission: MissionRow) => {
+    return (
+      <div className="flex gap-2 text-xs">
+        <span className={`px-1.5 py-0.5 rounded border ${mission.sceneUrl ? 'bg-green-500/10 border-green-500/20 text-green-600' : 'bg-muted border-border text-muted-foreground'}`}>
+          {mission.sceneUrl ? '✓ 场景' : '✗ 场景'}
+        </span>
+        <span className={`px-1.5 py-0.5 rounded border ${mission.trajectoryUrl ? 'bg-green-500/10 border-green-500/20 text-green-600' : 'bg-muted border-border text-muted-foreground'}`}>
+          {mission.trajectoryUrl ? '✓ 航线' : '✗ 航线'}
+        </span>
+      </div>
+    );
   };
 
   // 按状态和创建时间排序
   const sortedMissions = [...missions].sort((a, b) => {
     // 优先级：running > ready > configured > planning > draft > paused > completed > failed
-    const statusPriority = {
+    const statusPriority: Record<string, number> = {
       running: 7,
       ready: 6, 
       configured: 5,
@@ -181,133 +194,221 @@ export default function StartupPage({ onMissionSelect }: StartupPageProps) {
       failed: 0
     };
     
-    const priorityDiff = statusPriority[b.status] - statusPriority[a.status];
+    const priorityDiff = (statusPriority[b.status] || 0) - (statusPriority[a.status] || 0);
     if (priorityDiff !== 0) return priorityDiff;
     
     // 相同状态按创建时间倒序
-    return b.createdAt.getTime() - a.createdAt.getTime();
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
   });
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-6">
-      <div className="max-w-6xl mx-auto">
+    <div className="min-h-screen bg-background text-foreground p-6 md:p-12">
+      <div className="max-w-7xl mx-auto space-y-8">
         {/* 头部 */}
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-slate-800 mb-2">PCD Viewer</h1>
-          <p className="text-slate-600 text-lg">无人机任务规划与执行系统</p>
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 animate-in slide-in-from-top-4 duration-500">
+          <div className="space-y-1">
+            <h1 className="text-4xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+              PCD Viewer
+            </h1>
+            <p className="text-muted-foreground text-lg">无人机任务规划与执行系统</p>
+          </div>
+          <Button onClick={loadData} variant="outline" disabled={loading} className="shadow-sm">
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+            刷新数据
+          </Button>
         </div>
 
-        {/* 创建新任务 */}
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <PlusCircle className="h-5 w-5" />
-              创建新任务
-            </CardTitle>
-            <CardDescription>
-              创建一个新的无人机任务，设置场景和规划航线
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex gap-3">
-              <div className="flex-1">
-                <Input
-                  placeholder="输入任务名称..."
-                  value={newMissionName}
-                  onChange={(e) => setNewMissionName(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && createMission()}
-                />
-              </div>
-              <Button onClick={createMission}>
-                <PlusCircle className="h-4 w-4 mr-2" />
-                创建任务
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* 任务列表 */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-          {sortedMissions.map(mission => (
-            <Card 
-              key={mission.id} 
-              className={`cursor-pointer transition-all duration-200 hover:shadow-lg hover:scale-105 ${
-                selectedMissionId === mission.id ? 'ring-2 ring-primary' : ''
-              }`}
-              onClick={() => setSelectedMissionId(mission.id)}
-            >
-              <CardHeader className="pb-3">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <CardTitle className="text-lg mb-2">{mission.name}</CardTitle>
-                    <div className="flex items-center gap-2 mb-2">
-                      {getStatusIcon(mission.status)}
-                      <Badge variant={getStatusColor(mission.status) as "default" | "secondary" | "destructive" | "outline"}>
-                        {getStatusText(mission.status)}
-                      </Badge>
-                    </div>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteMission(mission.id);
-                    }}
-                    className="text-slate-400 hover:text-red-500"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
+        {/* 统计面板 */}
+        {stats && (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-9 gap-3 animate-in fade-in duration-700 delay-100">
+            <Card className="bg-primary/5 border-primary/10 shadow-sm hover:shadow-md transition-all">
+              <CardContent className="p-4 flex flex-col items-center justify-center text-center">
+                <div className="text-xs font-medium text-muted-foreground mb-1 flex items-center gap-1">
+                  <Database className="h-3 w-3" /> 总计
                 </div>
-                <CardDescription>
-                  {getMissionDescription(mission)}
-                </CardDescription>
-              </CardHeader>
-              
-              <CardContent className="pt-0">
-                <div className="space-y-2 text-sm text-slate-600">
-                  <div>创建: {formatDate(mission.createdAt)}</div>
-                  {mission.startedAt && (
-                    <div>开始: {formatDate(mission.startedAt)}</div>
-                  )}
-                  {mission.completedAt && (
-                    <div>完成: {formatDate(mission.completedAt)}</div>
-                  )}
-                </div>
-                
-                <div className="mt-4 flex gap-2">
-                  <Button 
-                    size="sm" 
-                    className="flex-1"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      selectMission(mission);
-                    }}
-                  >
-                    <Play className="h-4 w-4 mr-2" />
-                    打开任务
-                  </Button>
-                </div>
+                <div className="text-2xl font-bold text-primary">{stats.total}</div>
               </CardContent>
             </Card>
-          ))}
-        </div>
-
-        {missions.length === 0 && (
-          <Card className="text-center py-12">
-            <CardContent>
-              <div className="text-slate-400 mb-4">
-                <FileText className="h-16 w-16 mx-auto mb-4" />
-                <p className="text-lg">暂无任务</p>
-                <p className="text-sm">创建你的第一个无人机任务开始使用</p>
-              </div>
-            </CardContent>
-          </Card>
+            
+            {[
+              { label: '草稿', value: stats.draft, color: 'text-muted-foreground' },
+              { label: '已配置', value: stats.configured, color: 'text-blue-600' },
+              { label: '规划中', value: stats.planning, color: 'text-yellow-600' },
+              { label: '就绪', value: stats.ready, color: 'text-green-600' },
+              { label: '执行中', value: stats.running, color: 'text-purple-600' },
+              { label: '暂停', value: stats.paused, color: 'text-orange-600' },
+              { label: '完成', value: stats.completed, color: 'text-teal-600' },
+              { label: '失败', value: stats.failed, color: 'text-red-600' },
+            ].map((item) => (
+              <Card key={item.label} className="shadow-sm hover:shadow-md transition-all">
+                <CardContent className="p-4 flex flex-col items-center justify-center text-center">
+                  <div className="text-xs font-medium text-muted-foreground mb-1">{item.label}</div>
+                  <div className={`text-xl font-bold ${item.color}`}>{item.value}</div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
         )}
 
-        {/* 底部信息 */}
-        <div className="text-center mt-8 text-slate-500 text-sm">
-          <p>选择一个任务进入主界面，或创建新任务开始规划</p>
+        {/* 错误提示 */}
+        {error && (
+          <div className="p-4 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive flex items-center gap-2 animate-in shake">
+            <div className="h-2 w-2 rounded-full bg-destructive animate-pulse" />
+            错误: {error}
+          </div>
+        )}
+
+        <div className="grid lg:grid-cols-[350px_1fr] gap-8 animate-in slide-in-from-bottom-8 duration-700 delay-200">
+          {/* 左侧：创建新任务 */}
+          <div className="space-y-6">
+            <Card className="border-primary/20 shadow-lg shadow-primary/5 overflow-hidden relative">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-primary to-primary/20" />
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <PlusCircle className="h-5 w-5 text-primary" />
+                  创建新任务
+                </CardTitle>
+                <CardDescription>
+                  开始一个新的无人机飞行任务
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Input
+                    placeholder="输入任务名称..."
+                    value={newMissionName}
+                    onChange={(e) => setNewMissionName(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && createMission()}
+                    disabled={loading}
+                    className="h-11"
+                  />
+                </div>
+                <Button onClick={createMission} disabled={loading} className="w-full h-11 shadow-lg shadow-primary/20">
+                  <PlusCircle className="h-4 w-4 mr-2" />
+                  立即创建
+                </Button>
+              </CardContent>
+            </Card>
+
+            <div className="p-6 rounded-xl bg-muted/30 border border-border/50 space-y-4">
+              <h3 className="font-semibold flex items-center gap-2">
+                <LayoutGrid className="h-4 w-4" />
+                快速指南
+              </h3>
+              <div className="space-y-3 text-sm text-muted-foreground">
+                <div className="flex gap-3">
+                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border bg-background text-xs font-medium shadow-sm">1</div>
+                  <p>创建任务并上传场景点云文件 (.pcd)</p>
+                </div>
+                <div className="flex gap-3">
+                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border bg-background text-xs font-medium shadow-sm">2</div>
+                  <p>上传或在 3D 视图中规划飞行航线</p>
+                </div>
+                <div className="flex gap-3">
+                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border bg-background text-xs font-medium shadow-sm">3</div>
+                  <p>连接 ROS 并开始执行自动化任务</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 右侧：任务列表 */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold tracking-tight">最近任务</h2>
+              <div className="text-sm text-muted-foreground">
+                共 {missions.length} 个任务
+              </div>
+            </div>
+
+            {/* 加载状态 */}
+            {loading && missions.length === 0 && (
+              <div className="text-center py-12 border rounded-xl border-dashed">
+                <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-4 text-muted-foreground" />
+                <p className="text-muted-foreground">加载中...</p>
+              </div>
+            )}
+
+            {/* 空状态 */}
+            {!loading && missions.length === 0 && (
+              <div className="text-center py-16 border rounded-xl border-dashed bg-muted/10">
+                <BarChart className="h-12 w-12 mx-auto mb-4 text-muted-foreground/50" />
+                <h3 className="text-lg font-medium mb-1">暂无任务</h3>
+                <p className="text-muted-foreground">创建你的第一个无人机任务开始使用</p>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {sortedMissions.map(mission => (
+                <Card 
+                  key={mission.id} 
+                  className={`group cursor-pointer transition-all duration-300 hover:shadow-lg hover:-translate-y-1 border-border/50 hover:border-primary/50 ${
+                    selectedMissionId === mission.id ? 'ring-2 ring-primary shadow-lg' : ''
+                  }`}
+                  onClick={() => setSelectedMissionId(mission.id)}
+                >
+                  <CardHeader className="pb-3 space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="space-y-1 min-w-0">
+                        <CardTitle className="text-base truncate leading-tight group-hover:text-primary transition-colors">
+                          {mission.name}
+                        </CardTitle>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={getStatusColor(mission.status as MissionStatus) as "default" | "secondary" | "destructive" | "outline"} className="h-5 px-1.5 gap-1 font-normal">
+                            {getStatusIcon(mission.status as MissionStatus)}
+                            {getStatusText(mission.status as MissionStatus)}
+                          </Badge>
+                        </div>
+                      </div>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteMission(mission.id);
+                        }}
+                        className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-all"
+                        disabled={loading}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  
+                  <CardContent>
+                    <div className="flex items-center justify-between mb-4">
+                      {getMissionDescription(mission)}
+                    </div>
+                    
+                    <div className="space-y-1 text-xs text-muted-foreground mb-4">
+                      <div className="flex items-center gap-1.5">
+                        <Clock className="h-3 w-3" />
+                        创建: {formatDate(new Date(mission.createdAt))}
+                      </div>
+                      {mission.completedAt && (
+                        <div className="flex items-center gap-1.5 text-green-600">
+                          <CheckCircle2 className="h-3 w-3" />
+                          完成: {formatDate(new Date(mission.completedAt))}
+                        </div>
+                      )}
+                    </div>
+                    
+                    <Button 
+                      size="sm" 
+                      className="w-full group-hover:bg-primary group-hover:text-primary-foreground transition-colors"
+                      variant="secondary"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        selectMission(mission);
+                      }}
+                    >
+                      打开任务 <ArrowRight className="h-3.5 w-3.5 ml-2 group-hover:translate-x-1 transition-transform" />
+                    </Button>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>

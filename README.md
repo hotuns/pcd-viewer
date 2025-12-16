@@ -1,18 +1,31 @@
-## UAV Mission Manager v0.2
+## UAV Mission Manager v0.3
 
-一个基于 Next.js + three.js (@react-three/fiber, @react-three/drei) 的无人机任务管理小工具，支持创建任务并加载场景点云，同时通过 roslibjs 订阅无人机实时位置，采用深色专业主题。
+一个围绕《Missionlogic.md》状态机重构的无人机任务地面软件，基于 Next.js + three.js (@react-three/fiber, @react-three/drei) 构建。当前聚焦「机库 ready → 任务上传 → 起飞 → 执行 → 返航 → 降落/充电」闭环，使用 roslibjs 与 `mission_msgs` 中的消息示例交互。
 
 ### 功能概览
 
-- 任务管理
-	- 创建任务；为任务配置场景（点云 .pcd）与航线轨迹（JSON/CSV或URL）
-	- 场景支持本地文件或 URL；加载后自动视角适配（fit to view）
-- ROS 实时位置
-	- 通过 roslibjs 连接 ROSBridge（如 ws://host:port）
-	- 订阅 /mavros/local_position/odom，显示实时位置与速度信息
-	- 仅显示实时数据，不在三维视图中绘制航迹
+- 任务配置
+	- 上传/链接点云场景（.pcd/.ply），即时加载到 3D 视图
+	- 使用全新的 `TrajectoryEditor` 编辑 MissionList 轨迹，支持 JSON 文件往返
+	- 在 `HomePos` 表单中维护机库/返航点 (PoseStamped)
+- Missionlogic 运行面板
+	- 通过 `MissionCommand` 服务控制机库开关
+	- 一键上传 MissionList、发送 TAKEOFF/LAND/EXECUTE/RETURN_HOME/ARM_OFF 控制 (`mission_msgs/Control`)
+	- 订阅 `mission_msgs/MissionStatus`、`mission_msgs/HangarChargeStatus`、`sensor_msgs/BatteryState`，可视化阶段、航点、充电状态
+	- 电量低于阈值自动触发回家任务，符合 Missionlogic.md 描述
+- ROS 实时遥测
+	- 订阅 `/odom_visualization/pose`，三维视图展示无人机模型；可开启视角跟随
+	- 轨迹点云仅展示规划航线，不再绘制实时航迹/网格地图，减少与 Missionlogic 不一致的扩展功能
 
-注：为对齐新目标，已移除轨迹显示、模拟回放、着色模式与性能面板等扩展功能，仅保留任务与实时位置。
+> `mission_msgs/` 目录内附带了 MissionList、WaypointPosition、HangarChargeStatus 等示例消息定义，可直接在 ROS 工作空间中编译使用。
+
+### 当前完成情况（2025-12-10）
+
+- ✅ 将 Missionlogic.md 中的状态机流程映射到前端运行面板：包含机库开/关、任务上传、起飞/执行/返航/降落/停桨等指令按钮，以及电量低自动返航逻辑。
+- ✅ 新增 `useMissionRuntime` Hook，统一连接 `mission_msgs` 中的 MissionCommand/MissionList/MissionStatus/HangarChargeStatus/BatteryState 等 ROS 接口，实时展示航点进度与机库充电状态。
+- ✅ 左侧界面重构：TaskInfo 显示 Mission 状态 + Runtime 阶段，MissionRuntimePanel 负责 Missionlogic 操作，MissionHomeForm + TrajectoryEditor 用于配置 HomePos 与航线。
+- ✅ `mission_msgs` 增补 HangarChargeStatus.msg，CMakeLists 已包含，可直接在 ROS 工作空间编译。
+- ⚠️ 数据持久化层暂未存储 HomePos、运行事件等扩展字段，刷新页面会丢失这些信息；后续需扩展 `/api/missions` 与 SQLite 表结构。
 
 ### 运行
 
@@ -46,4 +59,13 @@ npm run dev
 - PCD 二进制格式兼容性依赖 three.js 的 PCDLoader，不同导出器可能存在差异（建议优先 ASCII）
 - ROS 话题与消息类型需按实际环境调整（默认 /mavros/local_position/odom, nav_msgs/msg/Odometry）
 
+### 文档
 
+所有补充说明文档已集中放在 [docs/](./docs/README.md) 目录，可按主题查阅：
+
+- 架构/交互：`docs/INTERACTION_FLOW.md`、`docs/LEFT_PANEL_REFACTOR.md`、`docs/REFACTORING_SUMMARY.md`
+- 数据/存储：`docs/DATABASE_GUIDE.md`
+- ROS 集成：`docs/ROS_TOPICS_SUMMARY.md`、`docs/ROS_TEST_GUIDE.md`、`docs/test_ros_connection.md`、`docs/ros.md`
+- 渲染相关：`docs/VOXEL_RENDERING_GUIDE.md`
+
+新增文档时请直接在 `docs/` 下创建并更新索引，保持根目录整洁。

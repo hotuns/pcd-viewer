@@ -6,13 +6,15 @@ import { Grid, OrbitControls, Line } from "@react-three/drei";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { PCDLoader } from "three/examples/jsm/loaders/PCDLoader.js";
-import type { Source, DronePosition, Waypoint, PointCloudFrame, GridMapData } from "@/types/mission";
+import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
+import type { Source, DronePosition, Waypoint } from "@/types/mission";
 import { DroneModel } from "./DroneModel";
-import { PointCloudMap } from "./PointCloudMap";
 import { CameraFollower } from "./CameraFollower";
+import { VoxelizedPointCloud } from "./VoxelizedPointCloud";
 
 export type PCDCanvasHandle = {
   fitToView: () => void;
+  zoomToCenter: () => void;
   orientToPlane: (plane: 'xy'|'xz'|'yz') => void;
 };
 
@@ -24,6 +26,8 @@ export type PCDCanvasProps = {
   showSceneCloud?: boolean; // 场景点云显示开关
   colorMode?: "none" | "rgb" | "intensity" | "height"; // none 表示禁用伪着色
   roundPoints?: boolean; // 使用圆盘精灵渲染点
+  voxelized?: boolean; // 是否使用体素化渲染
+  voxelSize?: number; // 体素大小（米）
   onLoadedAction?: (info: { bbox: THREE.Box3; count: number }) => void;
   onLoadingChange?: (loading: boolean) => void;
   plannedPathPoints?: Array<{ x: number; y: number; z: number }>; // 用于渲染规划航线
@@ -36,10 +40,6 @@ export type PCDCanvasProps = {
   followDrone?: boolean; // 视角跟随飞机
   waypoints?: Waypoint[]; // 航点状态信息
   currentWaypointIndex?: number; // 当前目标航点
-  realtimeFrames?: PointCloudFrame[]; // 实时点云帧数据
-  showRealtimeCloud?: boolean; // 是否显示实时点云
-  gridMapData?: GridMapData | null; // 网格地图数据
-  showGridMap?: boolean; // 是否显示网格地图
 };
 
 function SceneFitter({
@@ -120,7 +120,9 @@ function CameraOrienter({
 
       // Use Z-up for intuitive top/side views
       camera.up.set(0,0,1);
-      const newPos = new THREE.Vector3().copy(center).addScaledVector(normal.normalize(), dist);
+      const newPos = new THREE.Vector3();
+      newPos.copy(center);
+      newPos.addScaledVector(normal.normalize(), dist);
       camera.position.copy(newPos);
       camera.near = Math.max(0.01, dist / 100);
       camera.far = dist * 1000;
@@ -135,14 +137,47 @@ function CameraOrienter({
   return null;
 }
 
+function SceneResetter({
+  controlsRef,
+  registerReset,
+}: {
+  controlsRef: React.RefObject<OrbitControlsImpl | null>;
+  registerReset: (fn: () => void) => void;
+}) {
+  const { camera } = useThree();
+  useEffect(() => {
+    const reset = () => {
+      // Reset to default view (looking at 0,0,0 from a distance)
+      const defaultPos = new THREE.Vector3(5, 5, 5); // Default position
+      const defaultTarget = new THREE.Vector3(0, 0, 0);
+      
+      camera.position.copy(defaultPos);
+      camera.up.set(0, 1, 0); // Reset up vector
+      camera.lookAt(defaultTarget);
+      camera.updateProjectionMatrix();
+      
+      const controls = controlsRef.current;
+      if (controls) {
+        controls.target.copy(defaultTarget);
+        controls.update();
+      }
+    };
+    registerReset(reset);
+  }, [camera, controlsRef, registerReset]);
+  return null;
+}
+
 export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PCDCanvas(
-  { source, pointSize = 0.01, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathEditable = false, onPlannedPointsChange, plannedDragPlane = 'xy', dronePosition, followDrone = false, waypoints, currentWaypointIndex, realtimeFrames, showRealtimeCloud = true, gridMapData, showGridMap = false },
+  { source, pointSize = 0.01, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, voxelized = false, voxelSize = 0.05, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathEditable = false, onPlannedPointsChange, plannedDragPlane = 'xy', dronePosition, followDrone = false, waypoints, currentWaypointIndex },
   ref
 ) {
   const [geom, setGeom] = useState<THREE.BufferGeometry | null>(null);
+  const [mesh, setMesh] = useState<THREE.Mesh | null>(null); // 新增：存储网格对象
+  const [renderMode, setRenderMode] = useState<'points' | 'mesh'>('points'); // 新增：渲染模式
   const [bbox, setBbox] = useState<THREE.Box3 | null>(null);
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const fitRef = useRef<(() => void) | null>(null);
+  const resetRef = useRef<(() => void) | null>(null);
   const orientRef = useRef<((plane: 'xy'|'xz'|'yz') => void) | null>(null);
   const [colorVersion, setColorVersion] = useState(0);
   // 生成一个圆形纹理用于点精灵（圆盘效果，边缘柔和）
@@ -203,11 +238,15 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
   const registerFit = (fn: () => void) => {
     fitRef.current = fn;
   };
+  const registerReset = (fn: () => void) => {
+    resetRef.current = fn;
+  };
   const registerOrient = (fn: (plane: 'xy'|'xz'|'yz') => void) => {
     orientRef.current = fn;
   };
   useImperativeHandle(ref, () => ({
     fitToView: () => fitRef.current?.(),
+    zoomToCenter: () => resetRef.current?.(),
     orientToPlane: (plane: 'xy'|'xz'|'yz') => orientRef.current?.(plane),
   }), []);
 
@@ -216,34 +255,108 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
     async function load() {
       if (!source) {
         setGeom(null);
+        setMesh(null);
         setBbox(null);
         return;
       }
-      const loader = new PCDLoader();
+      
+      // 判断文件类型
+      let fileExtension = '';
+      if (source.type === "url") {
+        fileExtension = source.url.split('.').pop()?.toLowerCase() || '';
+      } else {
+        fileExtension = source.file.name.split('.').pop()?.toLowerCase() || '';
+      }
+      
       try {
         onLoadingChangeRef.current?.(true);
-        let points: THREE.Points | null = null;
-        if (source.type === "url") {
-          points = (await loader.loadAsync(source.url)) as THREE.Points;
+        
+        if (fileExtension === 'ply') {
+          // 加载 PLY 文件
+          const plyLoader = new PLYLoader();
+          let geometry: THREE.BufferGeometry;
+          
+          if (source.type === "url") {
+            geometry = await plyLoader.loadAsync(source.url);
+          } else {
+            const blobUrl = URL.createObjectURL(source.file);
+            geometry = await plyLoader.loadAsync(blobUrl);
+            URL.revokeObjectURL(blobUrl);
+          }
+          
+          if (cancelled) return;
+          
+          // PLY 可能包含法线和颜色
+          geometry.computeBoundingBox();
+          if (!geometry.attributes.normal) {
+            geometry.computeVertexNormals();
+          }
+          
+          // 创建增强的网格材质
+          const material = new THREE.MeshStandardMaterial({
+            color: geometry.attributes.color ? 0xffffff : 0xdddddd,
+            vertexColors: !!geometry.attributes.color,
+            flatShading: false,
+            side: THREE.DoubleSide,
+            roughness: 0.6,
+            metalness: 0.1,
+            emissive: new THREE.Color(0x000000),
+            emissiveIntensity: 0,
+          });
+          
+          const meshObj = new THREE.Mesh(geometry, material);
+          meshObj.castShadow = true;
+          meshObj.receiveShadow = true;
+          
+          setMesh(meshObj);
+          setGeom(geometry);
+          setRenderMode('mesh');
+          
+          const b = geometry.boundingBox ?? new THREE.Box3().setFromObject(meshObj);
+          const clone = b.clone();
+          setBbox(clone);
+          
+          const pos = geometry.getAttribute("position");
+          const count = pos?.count ?? 0;
+          onLoadedRef.current?.({ bbox: clone, count });
+          
+          console.log(`Loaded PLY mesh: ${count} vertices`);
         } else {
-          const blobUrl = URL.createObjectURL(source.file);
-          points = (await loader.loadAsync(blobUrl)) as THREE.Points;
-          URL.revokeObjectURL(blobUrl);
+          // 加载 PCD 文件（点云）
+          const pcdLoader = new PCDLoader();
+          let points: THREE.Points | null = null;
+          
+          if (source.type === "url") {
+            points = (await pcdLoader.loadAsync(source.url)) as THREE.Points;
+          } else {
+            const blobUrl = URL.createObjectURL(source.file);
+            points = (await pcdLoader.loadAsync(blobUrl)) as THREE.Points;
+            URL.revokeObjectURL(blobUrl);
+          }
+          
+          if (cancelled) return;
+          
+          const geometry = points.geometry as THREE.BufferGeometry;
+          geometry.computeBoundingBox();
+          setGeom(geometry);
+          setMesh(null);
+          setRenderMode('points');
+          
+          const b = geometry.boundingBox ?? new THREE.Box3().setFromObject(points);
+          const clone = b.clone();
+          setBbox(clone);
+          
+          const pos = geometry.getAttribute("position");
+          const count = pos?.count ?? 0;
+          onLoadedRef.current?.({ bbox: clone, count });
+          
+          console.log(`Loaded PCD point cloud: ${count} points`);
         }
-        if (cancelled) return;
-        const geometry = points.geometry as THREE.BufferGeometry;
-        geometry.computeBoundingBox();
-        setGeom(geometry);
-        const b = geometry.boundingBox ?? new THREE.Box3().setFromObject(points);
-        const clone = b.clone();
-        setBbox(clone);
-        const pos = geometry.getAttribute("position");
-        const count = pos?.count ?? 0;
-        onLoadedRef.current?.({ bbox: clone, count });
+        
         // auto fit
         setTimeout(() => fitRef.current?.(), 0);
       } catch (e) {
-        console.error("Failed to load PCD:", e);
+        console.error(`Failed to load ${fileExtension.toUpperCase()} file:`, e);
       } finally {
         onLoadingChangeRef.current?.(false);
       }
@@ -353,21 +466,54 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         dpr={[1, 2]}
         gl={{ 
           toneMapping: THREE.ACESFilmicToneMapping,
-          toneMappingExposure: 1.5,
+          toneMappingExposure: 1.8,
           outputColorSpace: THREE.SRGBColorSpace
         }}
       >
-        <color attach="background" args={["#111214"]} />
-        <ambientLight intensity={1.0} />
-        <directionalLight position={[5, 5, 5]} intensity={1.5} />
-        <directionalLight position={[-5, -5, 5]} intensity={0.8} />
-        <pointLight position={[0, 0, 10]} intensity={0.8} />
-        <hemisphereLight args={["#ffffff", "#444444", 0.6]} />
+        <color attach="background" args={["#1a1b1e"]} />
+        
+        {/* 增强光照系统 */}
+        {/* 环境光 - 提供基础亮度 */}
+        <ambientLight intensity={1.5} />
+        
+        {/* 主光源 - 模拟太阳光 */}
+        <directionalLight 
+          position={[10, 10, 10]} 
+          intensity={2.0}
+          castShadow
+          shadow-mapSize-width={2048}
+          shadow-mapSize-height={2048}
+        />
+        
+        {/* 补光 - 从不同角度照亮场景 */}
+        <directionalLight position={[-8, 5, 8]} intensity={1.2} />
+        <directionalLight position={[5, -5, 5]} intensity={0.8} />
+        
+        {/* 顶部点光源 - 增加高光效果 */}
+        <pointLight position={[0, 0, 15]} intensity={1.5} distance={50} decay={2} />
+        
+        {/* 半球光 - 模拟天空和地面反射 */}
+        <hemisphereLight 
+          args={["#ffffff", "#555555", 1.2]} 
+          position={[0, 10, 0]}
+        />
+        
+        {/* 聚光灯 - 突出中心区域（可选）*/}
+        <spotLight
+          position={[0, 20, 0]}
+          angle={0.5}
+          penumbra={0.5}
+          intensity={0.8}
+          castShadow
+        />
+        
         {showGrid && (
           <Grid args={[10, 10]} cellColor="#2a2a2a" sectionColor="#3a3a3a" infiniteGrid />
         )}
         {showAxes && <axesHelper args={[50]} />}
-        {showSceneCloud && geom && (
+        
+        {/* 场景渲染：根据模式选择渲染方式 */}
+        {showSceneCloud && renderMode === 'points' && geom && !voxelized && (
           <points key={colorVersion} geometry={geom} frustumCulled={false}>
             <pointsMaterial
               size={pointSize}
@@ -379,6 +525,20 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
               depthWrite={!roundPoints}
             />
           </points>
+        )}
+        
+        {/* 体素化点云渲染 */}
+        {showSceneCloud && renderMode === 'points' && geom && voxelized && (
+          <VoxelizedPointCloud 
+            geometry={geom} 
+            voxelSize={voxelSize}
+            colorMode={colorMode}
+          />
+        )}
+        
+        {/* PLY 网格渲染 */}
+        {showSceneCloud && renderMode === 'mesh' && mesh && (
+          <primitive object={mesh} key={colorVersion} />
         )}
 
         {/* 规划航线渲染：折线 + 航点球（可选编辑）*/}
@@ -414,16 +574,40 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
               }
             }}
           >
-            {/* 折线（全路径）*/}
-            <Line
-              points={plannedPathPoints.map(p => [p.x, p.y, p.z]) as [number, number, number][]}
-              color="#2dd4bf"
-              lineWidth={2}
-              dashed={false}
-              depthTest
-              opacity={0.9}
-              transparent
-            />
+            {/* 待完成路径段（使用灰色），若无状态信息则显示整条路径 */}
+            {(() => {
+              if (plannedPathPoints.length < 2) return null;
+              const hasStatus = Array.isArray(waypoints) && waypoints.length > 0;
+              if (!hasStatus) {
+                return (
+                  <Line
+                    points={plannedPathPoints.map(p => [p.x, p.y, p.z]) as [number, number, number][]}
+                    color="#94a3b8"
+                    lineWidth={2}
+                    dashed={false}
+                    depthTest
+                    opacity={0.8}
+                    transparent
+                  />
+                );
+              }
+              const lastCompleted = waypoints!.reduce((m, w) => (w.status === 'completed' ? Math.max(m, w.index ?? 0) : m), -1);
+              if (lastCompleted >= plannedPathPoints.length - 1) return null;
+              const pendingStart = Math.max(0, lastCompleted);
+              const pendingPoints = plannedPathPoints.slice(pendingStart).map(p => [p.x, p.y, p.z]) as [number, number, number][];
+              if (pendingPoints.length < 2) return null;
+              return (
+                <Line
+                  points={pendingPoints}
+                  color="#94a3b8"
+                  lineWidth={2}
+                  dashed={false}
+                  depthTest
+                  opacity={0.8}
+                  transparent
+                />
+              );
+            })()}
             {/* 已完成路径段：起点 -> 最后一个 completed 航点（叠加更醒目的绿色）*/}
             {(() => {
               if (!Array.isArray(waypoints) || waypoints.length === 0) return null;
@@ -769,11 +953,6 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           })()
         )}
 
-        {/* 点云地图渲染（来自ROS PointCloud2消息） */}
-        {showGridMap && gridMapData && gridMapData.data && gridMapData.data.length > 0 && (
-          <PointCloudMap gridMapData={gridMapData} />
-        )}
-
         {/* 无人机渲染 */}
         {dronePosition && (
           <Suspense fallback={
@@ -791,6 +970,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
 
         <OrbitControls ref={controlsRef} makeDefault />
         <SceneFitter bbox={bbox} controlsRef={controlsRef} registerFit={registerFit} />
+        <SceneResetter controlsRef={controlsRef} registerReset={registerReset} />
         <CameraOrienter bbox={bbox} plannedPoints={plannedPathPoints} controlsRef={controlsRef} registerOrient={registerOrient} />
         <CameraFollower dronePosition={dronePosition ?? null} followDrone={followDrone} controlsRef={controlsRef} />
       </Canvas>
@@ -834,4 +1014,3 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
 });
 
 export default PCDCanvas;
- 

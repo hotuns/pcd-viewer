@@ -1,0 +1,6 @@
+std_msgs/Header header
+int32 charge_status
+int32 battery_percentage
+float32 charge_power
+float32 charge_duration
+string error_message

@@ -25,6 +25,66 @@ export type MissionStatus =
   | 'completed'  // 完成：任务执行完毕
   | 'failed';    // 失败：任务执行失败
 
+// Missionlogic 运行阶段
+export type MissionPhase =
+  | 'idle'             // 未连接或未准备
+  | 'hangar_ready'     // 机库 ready，可执行上传
+  | 'mission_upload'   // 正在上传任务
+  | 'takeoff_ready'    // 起飞前检查完成
+  | 'takeoff'          // 起飞中
+  | 'executing'        // 任务执行中
+  | 'returning'        // 返航中
+  | 'landing'          // 降落中
+  | 'charging'         // 充电中
+  | 'error';           // 异常
+
+export interface MissionHomePosition {
+  frameId: string;
+  position: {
+    x: number;
+    y: number;
+    z: number;
+  };
+  yaw: number;
+}
+
+export interface HangarChargeTelemetry {
+  status: number;
+  percentage: number;
+  power: number;
+  duration: number;
+  error?: string;
+  updatedAt: Date;
+}
+
+export interface BatteryTelemetry {
+  percentage?: number;
+  voltage?: number;
+  remaining?: number;
+  updatedAt?: Date;
+}
+
+export interface MissionRuntimeEvent {
+  id: string;
+  timestamp: Date;
+  level: 'info' | 'warning' | 'error';
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface MissionRuntimeSnapshot {
+  phase: MissionPhase;
+  progress?: {
+    completed: number;
+    total: number;
+  };
+  lastWaypoint?: {
+    index: number;
+    info?: string;
+    position?: { x: number; y: number; z: number };
+  };
+}
+
 // 航点状态枚举
 export type WaypointStatus = 
   | 'pending'    // 待执行
@@ -48,6 +108,7 @@ export interface Mission {
   name: string;
   scene?: Source;  // 点云场景
   trajectory?: Source;  // 航线轨迹
+  home?: MissionHomePosition;
   status: MissionStatus;
   waypoints?: Waypoint[];  // 航点状态信息
   currentWaypointIndex?: number;  // 当前目标航点索引
