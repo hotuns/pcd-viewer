@@ -29,6 +29,26 @@ const DEFAULT_HOME: MissionHomePosition = {
   yaw: 0,
 };
 
+const parseTrajectoryPoints = (raw: unknown): Array<{ x: number; y: number; z: number }> => {
+  if (!Array.isArray(raw)) return [];
+  const toNum = (value: unknown) => {
+    if (typeof value === "number") return value;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  return raw.map((item) => {
+    if (typeof item === "object" && item !== null) {
+      const record = item as Record<string, unknown>;
+      return {
+        x: toNum(record.x),
+        y: toNum(record.y),
+        z: toNum(record.z),
+      };
+    }
+    return { x: 0, y: 0, z: 0 };
+  });
+};
+
 export default function MissionController({ initialMission, onBack }: MissionControllerProps) {
   const [selectedMission, setSelectedMission] = useState<Mission | null>(initialMission ?? null);
   const [plannedPoints, setPlannedPoints] = useState<Array<{ x: number; y: number; z: number }>>([]);
@@ -77,11 +97,64 @@ export default function MissionController({ initialMission, onBack }: MissionCon
     }
   }, [handleMissionUpdate, selectedMission]);
 
-  const handleTrajectorySave = useCallback((file: File, _json: string) => {
+  const fileToDataUrl = useCallback((file: File) => {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }, []);
+
+  const handleTrajectorySave = useCallback(async (file: File, _json: string) => {
     void _json;
     if (!selectedMission) return;
-    void handleMissionUpdate({ ...selectedMission, trajectory: { type: "file", file } });
-  }, [handleMissionUpdate, selectedMission]);
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      await handleMissionUpdate({ ...selectedMission, trajectory: { type: "url", url: dataUrl } });
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const pts = parseTrajectoryPoints(parsed.points);
+        setPlannedPoints(pts);
+      } catch (err) {
+        console.error("Failed to reload trajectory after save", err);
+      }
+    } catch (error) {
+      console.error("Failed to save trajectory file", error);
+    }
+  }, [fileToDataUrl, handleMissionUpdate, selectedMission]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadTrajectoryFromSource() {
+      const traj = selectedMission?.trajectory;
+      if (!traj) {
+        setPlannedPoints([]);
+        return;
+      }
+      try {
+        let text = "";
+        if (traj.type === "file") {
+          text = await traj.file.text();
+        } else {
+          const res = await fetch(traj.url);
+          text = await res.text();
+        }
+        if (cancelled) return;
+        const parsed = JSON.parse(text);
+        const pts = parseTrajectoryPoints(parsed.points);
+        setPlannedPoints(pts);
+      } catch (error) {
+        console.error("Failed to load trajectory source", error);
+        if (!cancelled) setPlannedPoints([]);
+      }
+    }
+    loadTrajectoryFromSource();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedMission?.trajectory]);
 
   const handleTrajectoryPointsChange = useCallback((points: Array<{ x: number; y: number; z: number; t?: number }>) => {
     setPlannedPoints(points.map((p) => ({ x: p.x, y: p.y, z: p.z })));

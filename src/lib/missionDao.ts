@@ -1,5 +1,5 @@
 import db from './db';
-import type { Mission, Waypoint } from '@/types/mission';
+import type { Mission, Waypoint, Source } from '@/types/mission';
 
 /**
  * 任务数据访问对象
@@ -62,15 +62,19 @@ function missionToRow(mission: Mission) {
 }
 
 // 将数据库行转换为 Mission 对象（不包含航点和日志）
-function rowToMission(row: MissionRow): Omit<Mission, 'waypoints' | 'executionLog' | 'scene' | 'trajectory'> & {
+function rowToMission(row: MissionRow): Omit<Mission, 'waypoints' | 'executionLog'> & {
   sceneUrl?: string;
   trajectoryUrl?: string;
 } {
+  const sceneSource: Source | undefined = row.scene_url ? { type: 'url', url: row.scene_url } : undefined;
+  const trajectorySource: Source | undefined = row.trajectory_url ? { type: 'url', url: row.trajectory_url } : undefined;
   return {
     id: row.id,
     name: row.name,
     status: row.status as Mission['status'],
+    scene: sceneSource,
     sceneUrl: row.scene_url ?? undefined,
+    trajectory: trajectorySource,
     trajectoryUrl: row.trajectory_url ?? undefined,
     currentWaypointIndex: row.current_waypoint_index ?? undefined,
     createdAt: new Date(row.created_at),
@@ -214,6 +218,18 @@ export function updateMission(id: string, updates: Partial<Mission>): void {
   if (updates.status !== undefined) {
     fields.push('status = ?');
     values.push(updates.status);
+  }
+  if (updates.scene !== undefined) {
+    fields.push('scene_type = ?');
+    values.push(updates.scene?.type ?? null);
+    fields.push('scene_url = ?');
+    values.push(updates.scene?.type === 'url' ? updates.scene.url : null);
+  }
+  if (updates.trajectory !== undefined) {
+    fields.push('trajectory_type = ?');
+    values.push(updates.trajectory?.type ?? null);
+    fields.push('trajectory_url = ?');
+    values.push(updates.trajectory?.type === 'url' ? updates.trajectory.url : null);
   }
   if (updates.currentWaypointIndex !== undefined) {
     fields.push('current_waypoint_index = ?');

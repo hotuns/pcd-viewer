@@ -1,27 +1,16 @@
 "use client";
 
-import { useState } from "react";
-import MissionController from "@/components/pcd/MissionController";
+import { useCallback } from "react";
+import { useRouter } from "next/navigation";
 import StartupPage from "@/components/StartupPage";
 import { Mission } from "@/types/mission";
 
 export default function Home() {
-  const [selectedMission, setSelectedMission] = useState<Mission | null>(null);
+  const router = useRouter();
 
-  const handleBackToStartup = () => {
-    setSelectedMission(null);
-  };
+  const handleMissionSelect = useCallback((mission: Mission) => {
+    router.push(`/mission/${mission.id}`);
+  }, [router]);
 
-  if (!selectedMission) {
-    return <StartupPage onMissionSelect={setSelectedMission} />;
-  }
-
-  return (
-    <div className="min-h-screen w-full">
-      <MissionController 
-        initialMission={selectedMission} 
-        onBack={handleBackToStartup}
-      />
-    </div>
-  );
+  return <StartupPage onMissionSelect={handleMissionSelect} />;
 }

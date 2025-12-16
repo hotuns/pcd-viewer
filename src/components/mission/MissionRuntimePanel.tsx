@@ -2,7 +2,7 @@ import { MissionPhase, HangarChargeTelemetry, BatteryTelemetry, MissionRuntimeEv
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { BatteryCharging, AlertTriangle, Home, Upload, PlaneTakeoff, PlaneLanding, RefreshCw, Warehouse, PowerOff } from "lucide-react";
+import { BatteryCharging, Home, Upload, PlaneLanding, RefreshCw, Warehouse, PowerOff } from "lucide-react";
 
 const phaseLabelMap: Record<MissionPhase, string> = {
   idle: "未执行",
@@ -43,9 +43,9 @@ interface MissionRuntimePanelProps {
   onUploadMission: () => Promise<void> | void;
   onResumeMission?: () => Promise<void> | void;
   onExecuteMission: () => Promise<void> | void;
-  onTakeoff: () => Promise<void> | void;
+  onTakeoff?: () => Promise<void> | void;
   onReturnHome: () => Promise<void> | void;
-  onLand: () => Promise<void> | void;
+  onLand?: () => Promise<void> | void;
   onArmOff: () => Promise<void> | void;
 }
 
@@ -75,6 +75,31 @@ export function MissionRuntimePanel({
   const actionDisabled = !rosConnected || !!busyAction;
   const batteryPct = battery?.percentage ?? null;
   const progressPct = progress && progress.total > 0 ? (progress.completed / progress.total) * 100 : 0;
+  const handleStartMission = async () => {
+    if (actionDisabled) return;
+    try {
+      if (onTakeoff) {
+        await onTakeoff();
+      }
+    } catch (err) {
+      console.warn("Takeoff command failed", err);
+    }
+    await onExecuteMission();
+  };
+
+  const handleReturnAndLand = async () => {
+    if (actionDisabled) return;
+    try {
+      await onReturnHome();
+    } catch (err) {
+      console.warn("Return home command failed", err);
+    }
+    try {
+      await onLand?.();
+    } catch (err) {
+      console.warn("Land command failed", err);
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -149,26 +174,20 @@ export function MissionRuntimePanel({
       )}
 
       <div className="grid grid-cols-2 gap-2">
-        <Button size="sm" variant="secondary" onClick={onOpenHangar} disabled={actionDisabled} className="justify-start">
+        <Button size="sm" variant="secondary" onClick={onOpenHangar} disabled title="待实现" className="justify-start">
           <Home className="h-4 w-4 mr-2" /> 打开机库
         </Button>
-        <Button size="sm" variant="secondary" onClick={onCloseHangar} disabled={actionDisabled} className="justify-start">
+        <Button size="sm" variant="secondary" onClick={onCloseHangar} disabled title="待实现" className="justify-start">
           <Home className="h-4 w-4 mr-2" /> 关闭机库
         </Button>
         <Button size="sm" onClick={onUploadMission} disabled={actionDisabled || !missionReady} className="justify-start">
           <Upload className="h-4 w-4 mr-2" /> 上传任务
         </Button>
-        <Button size="sm" variant="outline" onClick={onExecuteMission} disabled={actionDisabled} className="justify-start">
-          <RefreshCw className="h-4 w-4 mr-2" /> 执行任务
+        <Button size="sm" variant="outline" onClick={handleStartMission} disabled={actionDisabled} className="justify-start col-span-2">
+          <RefreshCw className="h-4 w-4 mr-2" /> 起飞并执行
         </Button>
-        <Button size="sm" variant="outline" onClick={onTakeoff} disabled={actionDisabled} className="justify-start">
-          <PlaneTakeoff className="h-4 w-4 mr-2" /> 起飞
-        </Button>
-        <Button size="sm" variant="outline" onClick={onReturnHome} disabled={actionDisabled} className="justify-start">
-          <AlertTriangle className="h-4 w-4 mr-2" /> 返航
-        </Button>
-        <Button size="sm" variant="outline" onClick={onLand} disabled={actionDisabled} className="justify-start">
-          <PlaneLanding className="h-4 w-4 mr-2" /> 降落
+        <Button size="sm" variant="outline" onClick={handleReturnAndLand} disabled={actionDisabled} className="justify-start col-span-2">
+          <PlaneLanding className="h-4 w-4 mr-2" /> 返航并降落
         </Button>
         <Button size="sm" variant="destructive" onClick={onArmOff} disabled={actionDisabled} className="justify-start">
           <PowerOff className="h-4 w-4 mr-2" /> ARM OFF
