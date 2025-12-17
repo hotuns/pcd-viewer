@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState, Suspense } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, Suspense } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Grid, OrbitControls, Line, TransformControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -20,6 +20,7 @@ export type PCDCanvasHandle = {
 
 export type PCDCanvasProps = {
   source?: Source | null;
+  livePointClouds?: Float32Array[];
   pointSize?: number;
   showGrid?: boolean;
   showAxes?: boolean;
@@ -30,7 +31,7 @@ export type PCDCanvasProps = {
   voxelSize?: number; // 体素大小（米）
   onLoadedAction?: (info: { bbox: THREE.Box3; count: number }) => void;
   onLoadingChange?: (loading: boolean) => void;
-  plannedPathPoints?: Array<{ x: number; y: number; z: number }>; // 用于渲染规划航线
+  plannedPathPoints?: Array<{ x: number; y: number; z: number }>; // 用于渲染编辑航线
   plannedPathVisible?: boolean;
   plannedPointSize?: number; // 航点球体大小（半径）
   plannedPathEditable?: boolean; // 是否支持在 3D 中拖拽编辑
@@ -169,7 +170,7 @@ function SceneResetter({
 }
 
 export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PCDCanvas(
-  { source, pointSize = 0.01, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, voxelized = false, voxelSize = 0.05, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathEditable = false, onPlannedPointsChange, selectedPointIndex, onSelectPoint, dronePosition, followDrone = false, waypoints, currentWaypointIndex },
+  { source, livePointClouds = [], pointSize = 0.01, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, voxelized = false, voxelSize = 0.05, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathEditable = false, onPlannedPointsChange, selectedPointIndex, onSelectPoint, dronePosition, followDrone = false, waypoints, currentWaypointIndex },
   ref
 ) {
   const [geom, setGeom] = useState<THREE.BufferGeometry | null>(null);
@@ -181,6 +182,19 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
   const resetRef = useRef<(() => void) | null>(null);
   const orientRef = useRef<((plane: 'xy'|'xz'|'yz') => void) | null>(null);
   const [colorVersion, setColorVersion] = useState(0);
+  const liveCloudGeometries = useMemo(() => {
+    return livePointClouds.map((cloud, index) => {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(cloud, 3));
+      return { geometry, opacity: Math.max(0.15, 0.75 - index * 0.08) };
+    });
+  }, [livePointClouds]);
+
+  useEffect(() => {
+    return () => {
+      liveCloudGeometries.forEach(({ geometry }) => geometry.dispose());
+    };
+  }, [liveCloudGeometries]);
   // 生成一个圆形纹理用于点精灵（圆盘效果，边缘柔和）
   const circleTexture = useRef<THREE.Texture | null>(null);
   if (roundPoints && !circleTexture.current && typeof document !== 'undefined') {
@@ -614,7 +628,20 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           <primitive object={mesh} key={colorVersion} />
         )}
 
-        {/* 规划航线渲染 + Gizmo 编辑 */}
+        {/* 实时点云 */}
+        {liveCloudGeometries.map(({ geometry, opacity }, idx) => (
+          <points key={`live-cloud-${idx}`} geometry={geometry} frustumCulled={false}>
+            <pointsMaterial
+              size={0.035}
+              sizeAttenuation
+              color="#4ade80"
+              transparent
+              opacity={opacity}
+            />
+          </points>
+        ))}
+
+        {/* 编辑航线渲染 + Gizmo 编辑 */}
         {plannedPathVisible && Array.isArray(plannedPathPoints) && plannedPathPoints.length > 0 && (
           <group key={`path-${pathVersion}`}>
             {/* 待完成路径段（灰色） */}

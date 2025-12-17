@@ -10,6 +10,7 @@ import type {
   BatteryTelemetry,
   DronePosition,
 } from "@/types/mission";
+import { createGridMapDataFromPointCloud2 } from "@/lib/pointCloudParser";
 // @ts-expect-error - roslib 没有类型声明
 import ROSLIB from "roslib";
 
@@ -19,9 +20,11 @@ const DEFAULT_ENDPOINTS = {
   missionStatusTopic: "/mission/status",
   waypointFeedbackTopic: "/mission/waypoint_feedback",
   controlTopic: "/mission/control",
+  taskOptTopic: "/mission/task_opt",
   hangarChargeTopic: "/hangar/charge_status",
   batteryTopic: "/battery/status",
   poseTopic: "/odom_visualization/pose",
+  pointCloudTopic: "/grid_map/occupancy_inflate",
 };
 
 const CONTROL_CMDS = {
@@ -30,6 +33,12 @@ const CONTROL_CMDS = {
   EXECUTE: 3,
   RETURN_HOME: 4,
   ARM_OFF: 5,
+};
+
+const TASK_OPT_CMDS = {
+  START: 1,
+  PAUSE: 2,
+  STOP: 3,
 };
 
 type Endpoints = typeof DEFAULT_ENDPOINTS;
@@ -110,15 +119,18 @@ export function useMissionRuntime({
   const [autoReturnTriggered, setAutoReturnTriggered] = useState(false);
   const [pendingWaypoints, setPendingWaypoints] = useState<Array<{ x: number; y: number; z: number; task_type?: string; info?: string }>>([]);
   const pendingWaypointsRef = useRef<Array<{ x: number; y: number; z: number; task_type?: string; info?: string }>>([]);
+  const [pointCloudStack, setPointCloudStack] = useState<Float32Array[]>([]);
 
   const missionCommandService = useRef<typeof ROSLIB.Service | null>(null);
   const missionListTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const controlTopic = useRef<typeof ROSLIB.Topic | null>(null);
+  const taskOptTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const missionStatusTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const hangarTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const batteryTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const poseTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const waypointTopic = useRef<typeof ROSLIB.Topic | null>(null);
+  const pointCloudTopicRef = useRef<typeof ROSLIB.Topic | null>(null);
 
   const pushEvent = useCallback((level: MissionRuntimeEvent["level"], message: string, details?: Record<string, unknown>) => {
     setEvents((prev) => [makeEvent(level, message, details), ...prev].slice(0, 40));
@@ -126,10 +138,11 @@ export function useMissionRuntime({
 
   const resetRosBindings = useCallback(() => {
     missionCommandService.current = null;
-    [missionListTopic, controlTopic, missionStatusTopic, hangarTopic, batteryTopic, poseTopic, waypointTopic].forEach((ref) => {
+    [missionListTopic, controlTopic, taskOptTopic, missionStatusTopic, hangarTopic, batteryTopic, poseTopic, waypointTopic, pointCloudTopicRef].forEach((ref) => {
       ref.current?.unsubscribe?.();
       ref.current = null;
     });
+    setPointCloudStack([]);
   }, []);
 
   useEffect(() => {
@@ -157,6 +170,11 @@ export function useMissionRuntime({
       ros,
       name: endpoints.controlTopic,
       messageType: "mission_msgs/Control",
+    });
+    taskOptTopic.current = new ROSLIB.Topic({
+      ros,
+      name: endpoints.taskOptTopic,
+      messageType: "mission_msgs/TaskOpt",
     });
 
     missionStatusTopic.current = new ROSLIB.Topic({
@@ -286,6 +304,24 @@ export function useMissionRuntime({
       }
     });
 
+    pointCloudTopicRef.current = new ROSLIB.Topic({
+      ros,
+      name: endpoints.pointCloudTopic,
+      messageType: "sensor_msgs/PointCloud2",
+    });
+
+    pointCloudTopicRef.current.subscribe((msg: any) => {
+      try {
+        const parsed = createGridMapDataFromPointCloud2(msg);
+        setPointCloudStack((prev) => {
+          const next = [parsed.data, ...prev];
+          return next.slice(0, 10);
+        });
+      } catch (error) {
+        console.warn("Failed to parse point cloud", error);
+      }
+    });
+
     return () => {
       resetRosBindings();
     };
@@ -333,6 +369,24 @@ export function useMissionRuntime({
     const MIN = -2147483648;
     return Math.min(Math.max(truncated, MIN), MAX);
   };
+
+  const publishTaskOpt = useCallback(async (opt: number, label: string) => {
+    if (!taskOptTopic.current) throw new Error("TaskOpt 话题未连接");
+    if (!mission) throw new Error("请先选择任务");
+    setBusyAction(`taskopt-${opt}`);
+    try {
+      const parsedId = clampInt32(Number.parseInt(mission.id, 10));
+      taskOptTopic.current.publish(
+        new ROSLIB.Message({
+          opt,
+          id: parsedId,
+        })
+      );
+      pushEvent("info", label, { opt, mission: mission.id });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [mission, pushEvent]);
 
   const sendMissionList = useCallback(async (pointsToUpload: Array<{ x: number; y: number; z: number; task_type?: string; info?: string }>, label: string) => {
     if (!missionListTopic.current) throw new Error("MissionList 话题未连接");
@@ -394,12 +448,19 @@ export function useMissionRuntime({
     }
     await sendMissionList(remaining, "续航任务已上传");
     pushEvent("info", "自动开始剩余航点");
+    await publishTaskOpt(TASK_OPT_CMDS.START, "TaskOpt 启动剩余任务");
     await publishControl(CONTROL_CMDS.EXECUTE);
-  }, [publishControl, sendMissionList, pushEvent]);
+  }, [publishControl, publishTaskOpt, sendMissionList, pushEvent]);
 
   const handleTakeoff = useCallback(() => publishControl(CONTROL_CMDS.TAKEOFF), [publishControl]);
-  const handleExecute = useCallback(() => publishControl(CONTROL_CMDS.EXECUTE), [publishControl]);
-  const handleReturnHome = useCallback(() => publishControl(CONTROL_CMDS.RETURN_HOME), [publishControl]);
+  const handleExecute = useCallback(async () => {
+    await publishTaskOpt(TASK_OPT_CMDS.START, "TaskOpt 启动任务");
+    await publishControl(CONTROL_CMDS.EXECUTE);
+  }, [publishControl, publishTaskOpt]);
+  const handleReturnHome = useCallback(async () => {
+    await publishTaskOpt(TASK_OPT_CMDS.STOP, "TaskOpt 停止任务");
+    await publishControl(CONTROL_CMDS.RETURN_HOME);
+  }, [publishControl, publishTaskOpt]);
   const handleLand = useCallback(() => publishControl(CONTROL_CMDS.LAND), [publishControl]);
   const handleArmOff = useCallback(() => publishControl(CONTROL_CMDS.ARM_OFF), [publishControl]);
   const handleOpenHangar = useCallback(() => callMissionCommand(1), [callMissionCommand]);
@@ -436,6 +497,7 @@ export function useMissionRuntime({
     lastWaypoint,
     pendingCount: pendingWaypoints.length,
     canResume: resumeAvailable,
+    pointClouds: pointCloudStack,
     actions: {
       openHangar: handleOpenHangar,
       closeHangar: handleCloseHangar,

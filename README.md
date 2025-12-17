@@ -15,7 +15,7 @@
 	- 电量低于阈值自动触发回家任务，符合 Missionlogic.md 描述
 - ROS 实时遥测
 	- 订阅 `/odom_visualization/pose`，三维视图展示无人机模型；可开启视角跟随
-	- 轨迹点云仅展示规划航线，不再绘制实时航迹/网格地图，减少与 Missionlogic 不一致的扩展功能
+	- 轨迹点云仅展示编辑航线，不再绘制实时航迹/网格地图，减少与 Missionlogic 不一致的扩展功能
 
 > `mission_msgs/` 目录内附带了 MissionList、WaypointPosition、HangarChargeStatus 等示例消息定义，可直接在 ROS 工作空间中编译使用。
 

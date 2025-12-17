@@ -9,14 +9,13 @@ import { MissionHomeForm } from "@/components/mission/MissionHomeForm";
 import TrajectoryEditor from "@/components/mission/TrajectoryEditor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { useMissionDatabase } from "@/hooks/useMissionDatabase";
 import { useRosConnection } from "@/hooks/useRosConnection";
 import { useMissionRuntime } from "@/hooks/useMissionRuntime";
 import type { Mission, MissionHomePosition, Waypoint } from "@/types/mission";
 import { cn } from "@/lib/utils";
-import { PlugZap, SatelliteDish, Undo2, Crosshair, MapPin } from "lucide-react";
+import { PlugZap, SatelliteDish, Undo2, Crosshair, MapPin, CheckCircle2 } from "lucide-react";
 
 interface MissionControllerProps {
   initialMission?: Mission | null;
@@ -57,7 +56,7 @@ export default function MissionController({ initialMission, onBack }: MissionCon
   const [selectedPathIndex, setSelectedPathIndex] = useState<number | null>(null);
   const canvasRef = useRef<PCDCanvasHandle | null>(null);
   const { updateMission: updateMissionDB } = useMissionDatabase();
-  const { rosUrl, setRosUrl, rosConnected, rosRef, connectROS, disconnectROS } = useRosConnection();
+  const { rosUrl, setRosUrl, rosConnected, rosRef, connectROS, disconnectROS, connectionError } = useRosConnection();
 
   const missionRuntime = useMissionRuntime({
     rosConnected,
@@ -210,6 +209,42 @@ export default function MissionController({ initialMission, onBack }: MissionCon
 
   const currentMission = selectedMission;
 
+  type MissionStage = "setup" | "planning" | "runtime";
+  const missionStage = useMemo<MissionStage>(() => {
+    const status = currentMission?.status;
+    if (!status || status === "draft" || status === "configured") return "setup";
+    if (status === "planning") return "planning";
+    return "runtime";
+  }, [currentMission?.status]);
+
+  const stageMeta: Record<MissionStage, { label: string; description: string }> = {
+    setup: {
+      label: "配置阶段",
+      description: "上传场景与航线、设置 HomePos。",
+    },
+    planning: {
+      label: "规划阶段",
+      description: "拖拽航点、微调路线，完成后进入执行。",
+    },
+    runtime: {
+      label: "执行阶段",
+      description: "监控任务运行状态，必要时返航或重新规划。",
+    },
+  };
+
+  const handleManualComplete = useCallback(() => {
+    if (!currentMission) return;
+    const confirmed = window.confirm(`确认将任务「${currentMission.name}」标记为完成？`);
+    if (!confirmed) return;
+    void handleMissionUpdate({
+      ...currentMission,
+      status: "completed",
+      completedAt: new Date(),
+    });
+  }, [currentMission, handleMissionUpdate]);
+
+  const canManualComplete = !!currentMission && currentMission.status !== "completed" && currentMission.status !== "failed";
+
   return (
     <div className="w-full h-screen flex flex-col bg-background">
       <header className="flex items-center justify-between px-6 py-4 border-b bg-card/80 backdrop-blur">
@@ -240,88 +275,141 @@ export default function MissionController({ initialMission, onBack }: MissionCon
             {rosConnected ? <PlugZap className="h-4 w-4" /> : <SatelliteDish className="h-4 w-4" />}
             {rosConnected ? "断开" : "连接"}
           </Button>
+          {canManualComplete && (
+            <Button variant="outline" size="sm" className="flex items-center gap-1 text-xs" onClick={handleManualComplete}>
+              <CheckCircle2 className="h-4 w-4" /> 标记完成
+            </Button>
+          )}
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
-        <aside className="w-[420px] border-r bg-card/40 backdrop-blur flex flex-col min-h-0">
-          <ScrollArea className="flex-1">
-            <div className="p-5 space-y-6">
+      {connectionError && (
+        <div className="px-6 py-2 bg-destructive/10 text-destructive text-xs border-b border-destructive/30">
+          {connectionError}，请检查 ws 地址并重试。
+        </div>
+      )}
+
+      <div className="flex flex-1 flex-col lg:flex-row overflow-hidden min-h-0">
+        <div className="w-full lg:flex-[0_0_420px] lg:max-w-[420px] bg-card/40 backdrop-blur flex flex-col min-h-[320px] lg:min-h-0 border-b lg:border-b-0 lg:border-r h-full">
+          <div className="flex-1 overflow-y-auto">
+            <div className="p-5 space-y-6 pb-8">
               <TaskInfo selectedMission={currentMission} phase={missionRuntime.phase} />
 
-              <MissionRuntimePanel
-                phase={missionRuntime.phase}
-                rosConnected={rosConnected}
-                hangar={missionRuntime.hangar}
-                battery={missionRuntime.battery}
-                progress={missionRuntime.progress}
-                lastWaypoint={missionRuntime.lastWaypoint}
-                events={missionRuntime.events}
-                busyAction={missionRuntime.busyAction}
-                missionReady={missionPlanReady}
-                pendingCount={missionRuntime.pendingCount}
-                canResume={missionRuntime.canResume}
-                runtimeError={missionRuntime.runtimeError}
-                onOpenHangar={missionRuntime.actions.openHangar}
-                onCloseHangar={missionRuntime.actions.closeHangar}
-                onUploadMission={missionRuntime.actions.uploadMission}
-                onResumeMission={missionRuntime.actions.resumeMission}
-                onExecuteMission={missionRuntime.actions.executeMission}
-                onTakeoff={missionRuntime.actions.takeoff}
-                onReturnHome={missionRuntime.actions.returnHome}
-                onLand={missionRuntime.actions.land}
-                onArmOff={missionRuntime.actions.armOff}
-              />
-
-              <div className="space-y-4">
-                <div className="text-xs font-semibold text-muted-foreground">场景点云</div>
-                <TaskConfigPanel selectedMission={currentMission} onMissionUpdate={handleMissionUpdate} />
-              </div>
-
-              <div className="space-y-4">
-                <div className="text-xs font-semibold text-muted-foreground">HomePos</div>
-                <MissionHomeForm value={selectedMission?.home ?? homePose} onChange={handleHomeChange} />
-              </div>
-
               {currentMission && (
-                <div className="space-y-4 pb-6">
-                  <div className="text-xs font-semibold text-muted-foreground flex items-center gap-2">
-                    <MapPin className="h-3.5 w-3.5" /> 航线编辑
-                    {selectedMission && (
-                      <div className="ml-auto flex items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant={isPlanning ? "outline" : "default"}
-                          className="h-7 text-xs"
-                          onClick={() => {
-                            if (!selectedMission) return;
-                            const nextStatus = isPlanning ? "ready" : "planning";
-                            void handleMissionUpdate({ ...selectedMission, status: nextStatus });
-                          }}
-                        >
-                          {isPlanning ? "完成规划" : "进入规划"}
-                        </Button>
-                      </div>
+                <div className="rounded-lg border border-border/60 bg-card/70 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs text-muted-foreground uppercase tracking-wide">当前阶段</div>
+                      <div className="text-sm font-semibold">{stageMeta[missionStage].label}</div>
+                      <p className="text-xs text-muted-foreground mt-1">{stageMeta[missionStage].description}</p>
+                    </div>
+                    {missionStage === "runtime" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-xs"
+                        onClick={() => {
+                          void handleMissionUpdate({ ...currentMission, status: "planning" });
+                        }}
+                      >
+                        进入规划
+                      </Button>
                     )}
+                  </div>
+                </div>
+              )}
+
+              {missionStage === "setup" && currentMission && (
+                <div className="space-y-5">
+                  <div className="space-y-4">
+                    <div className="text-xs font-semibold text-muted-foreground">场景点云</div>
+                    <TaskConfigPanel selectedMission={currentMission} onMissionUpdate={handleMissionUpdate} />
+                  </div>
+                  <div className="space-y-4">
+                    <div className="text-xs font-semibold text-muted-foreground">HomePos</div>
+                    <MissionHomeForm value={selectedMission?.home ?? homePose} onChange={handleHomeChange} />
+                  </div>
+                  <div className="rounded-lg border border-dashed border-primary/40 p-3 text-xs text-muted-foreground">
+                    完成配置后，即可进入规划阶段。
+                    <Button
+                      size="sm"
+                      className="mt-3 w-full"
+                      onClick={() => {
+                        if (!currentMission) return;
+                        void handleMissionUpdate({ ...currentMission, status: "planning" });
+                      }}
+                    >
+                      进入规划
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {missionStage === "planning" && currentMission && (
+                <div className="space-y-4 pb-4">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground font-semibold">
+                    <span className="flex items-center gap-2">
+                      <MapPin className="h-3.5 w-3.5" /> 航线编辑
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => {
+                          void handleMissionUpdate({ ...currentMission, status: "ready" });
+                        }}
+                      >
+                        完成规划
+                      </Button>
+                    </div>
                   </div>
                   <TrajectoryEditor
                     mission={currentMission}
                     onSaveAction={handleTrajectorySave}
                     onPointsChangeAction={handleTrajectoryPointsChange}
+                    externalPoints={plannedPoints}
                     editable={isPlanning}
                     selectedIndex={selectedPathIndex}
-                    onSelectIndex={isPlanning ? setSelectedPathIndex : undefined}
+                    onSelectIndex={setSelectedPathIndex}
                   />
                 </div>
               )}
-            </div>
-          </ScrollArea>
-        </aside>
 
-        <main className="flex-1 relative bg-muted/30">
+              {missionStage === "runtime" && (
+                <MissionRuntimePanel
+                  phase={missionRuntime.phase}
+                  rosConnected={rosConnected}
+                  hangar={missionRuntime.hangar}
+                  battery={missionRuntime.battery}
+                  progress={missionRuntime.progress}
+                  lastWaypoint={missionRuntime.lastWaypoint}
+                  events={missionRuntime.events}
+                  busyAction={missionRuntime.busyAction}
+                  missionReady={missionPlanReady}
+                  pendingCount={missionRuntime.pendingCount}
+                  canResume={missionRuntime.canResume}
+                  runtimeError={missionRuntime.runtimeError}
+                  onOpenHangar={missionRuntime.actions.openHangar}
+                  onCloseHangar={missionRuntime.actions.closeHangar}
+                  onUploadMission={missionRuntime.actions.uploadMission}
+                  onResumeMission={missionRuntime.actions.resumeMission}
+                  onExecuteMission={missionRuntime.actions.executeMission}
+                  onTakeoff={missionRuntime.actions.takeoff}
+                  onReturnHome={missionRuntime.actions.returnHome}
+                  onLand={missionRuntime.actions.land}
+                  onArmOff={missionRuntime.actions.armOff}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+
+        <main className="flex-1 relative bg-muted/30 min-h-[320px] lg:min-h-0">
           <PCDCanvas
             ref={canvasRef}
             source={currentMission?.scene}
+            livePointClouds={missionRuntime.pointClouds ?? []}
             plannedPathPoints={plannedPoints}
             plannedPathVisible
             plannedPathEditable={isPlanning}

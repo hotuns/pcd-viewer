@@ -18,7 +18,7 @@ export type Source = FileSource | URLSource;
 export type MissionStatus = 
   | 'draft'      // 草稿：刚创建，需要配置场景和航线
   | 'configured' // 已配置：场景和航线都已设置
-  | 'planning'   // 规划中：正在编辑航线
+  | 'planning'   // 编辑中：正在编辑航线
   | 'ready'      // 就绪：航线确认，等待执行
   | 'running'    // 执行中：任务正在进行
   | 'paused'     // 暂停：无人机暂停或充电

@@ -170,7 +170,7 @@ export default function TrajectoryEditor({
 
       {!isEditable && (
         <div className="text-[11px] text-amber-600 bg-amber-100/80 rounded-md px-3 py-2 border border-amber-200">
-          当前任务未进入“规划中”状态，点击「进入规划」后即可编辑航线。
+          当前任务未进入“中”状态，点击「进入编辑」后即可编辑航线。
         </div>
       )}
 

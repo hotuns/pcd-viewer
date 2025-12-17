@@ -25,7 +25,7 @@ export function TaskInfo({ selectedMission, phase }: TaskInfoProps) {
     const statusMap: Record<string, string> = {
       draft: '草稿',
       configured: '已配置',
-      planning: '规划中',
+      planning: '编辑中',
       ready: '就绪',
       running: '执行中',
       paused: '暂停',

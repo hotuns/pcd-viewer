@@ -23,8 +23,8 @@
 draft (草稿)
   ↓ [上传场景 + 航线]
 configured (已配置)
-  ↓ [开始规划]
-planning (规划中)
+  ↓ [开始编辑]
+planning (编辑中)
   ↓ [确认航线]
 ready (就绪)
   ↓ [开始任务]

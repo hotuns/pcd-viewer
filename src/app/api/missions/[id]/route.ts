@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getMissionById, createMission, updateMission, deleteMission } from '@/lib/missionDao';
+import type { Mission } from '@/types/mission';
 
 export async function GET(
   request: NextRequest,
@@ -32,7 +33,7 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
-    const updates = await request.json();
+    const updates = normalizeMissionPayload(await request.json()) as Partial<Mission>;
     
     updateMission(id, updates);
     
@@ -66,7 +67,7 @@ export async function DELETE(
 
 export async function POST(request: NextRequest) {
   try {
-    const mission = await request.json();
+    const mission = normalizeMissionPayload(await request.json()) as Mission;
     createMission(mission);
     
     return NextResponse.json({ success: true });
@@ -77,4 +78,36 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+function normalizeMissionPayload(payload: any) {
+  if (!payload || typeof payload !== "object") return payload;
+  const normalized = { ...payload };
+  const parseDate = (value: unknown) => {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (value instanceof Date) return value;
+    const parsed = new Date(value as string | number);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+  };
+
+  (["createdAt", "startedAt", "completedAt"] as const).forEach((key) => {
+    if (key in normalized) {
+      const parsed = parseDate(normalized[key]);
+      if (parsed === undefined) {
+        delete normalized[key];
+      } else {
+        normalized[key] = parsed;
+      }
+    }
+  });
+
+  if (Array.isArray(normalized.executionLog)) {
+    normalized.executionLog = normalized.executionLog.map((log: any) => {
+      const parsedTs = parseDate(log?.timestamp);
+      return parsedTs ? { ...log, timestamp: parsedTs } : log;
+    });
+  }
+
+  return normalized;
 }

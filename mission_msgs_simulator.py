@@ -13,8 +13,9 @@ from typing import Optional
 
 import rospy
 from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import BatteryState
+from sensor_msgs.msg import BatteryState, PointCloud2, PointField
 from std_msgs.msg import Header
+import struct
 
 from mission_msgs.msg import (
     MissionList,
@@ -22,6 +23,7 @@ from mission_msgs.msg import (
     WaypointPosition,
     HangarChargeStatus,
     Control,
+    TaskOpt,
 )
 
 
@@ -30,6 +32,10 @@ CMD_LAND = 2
 CMD_EXECUTE = 3
 CMD_RETURN_HOME = 4
 CMD_ARM_OFF = 5
+
+TASK_OPT_START = 1
+TASK_OPT_PAUSE = 2
+TASK_OPT_STOP = 3
 
 STATUS_HANGAR_READY = 0
 STATUS_MISSION_UPLOAD = 1
@@ -48,9 +54,11 @@ class MissionLogicSimulator:
         self.charge_pub = rospy.Publisher("/hangar/charge_status", HangarChargeStatus, queue_size=10, latch=True)
         self.battery_pub = rospy.Publisher("/battery/status", BatteryState, queue_size=10, latch=True)
         self.pose_pub = rospy.Publisher("/odom_visualization/pose", PoseStamped, queue_size=20)
+        self.cloud_pub = rospy.Publisher("/grid_map/occupancy_inflate", PointCloud2, queue_size=1)
 
         rospy.Subscriber("/mission/list", MissionList, self.on_mission_list)
         rospy.Subscriber("/mission/control", Control, self.on_control)
+        rospy.Subscriber("/mission/task_opt", TaskOpt, self.on_task_opt)
 
         self._lock = threading.Lock()
         self._current_mission: Optional[MissionList] = None
@@ -95,6 +103,17 @@ class MissionLogicSimulator:
             self.publish_charge_cycle()
         else:
             rospy.logwarn("未知的 Control 指令: %s", cmd)
+
+    def on_task_opt(self, msg: TaskOpt) -> None:
+        rospy.loginfo("收到 TaskOpt: opt=%d id=%d", msg.opt, msg.id)
+        if msg.opt == TASK_OPT_START:
+            self.start_mission()
+        elif msg.opt == TASK_OPT_PAUSE:
+            rospy.loginfo("模拟器未实现暂停，忽略 opt=2")
+        elif msg.opt == TASK_OPT_STOP:
+            self.finish_mission(land_only=True)
+        else:
+            rospy.logwarn("未知的 TaskOpt opt=%d", msg.opt)
 
     # ---------------------- 状态发布 ----------------------
     def publish_status(self, status_code: int, completed: Optional[int] = None) -> None:
@@ -147,6 +166,40 @@ class MissionLogicSimulator:
         pose.pose.position.z = z
         pose.pose.orientation.w = 1.0
         self.pose_pub.publish(pose)
+        self.publish_point_cloud(x, y, z)
+
+    def publish_point_cloud(self, x: float, y: float, z: float) -> None:
+        if self.cloud_pub.get_num_connections() == 0:
+            return
+        points = []
+        for _ in range(2000):
+            offset_r = random.uniform(0.3, 4.0)
+            theta = random.uniform(0, math.pi * 2)
+            phi = random.uniform(-math.pi / 6, math.pi / 6)
+            px = x + offset_r * math.cos(theta)
+            py = y + offset_r * math.sin(theta)
+            pz = z + offset_r * math.sin(phi)
+            points.extend([px, py, pz])
+
+        if not points:
+            return
+
+        binary = struct.pack('<' + 'f' * len(points), *points)
+        msg = PointCloud2()
+        msg.header = Header(stamp=rospy.Time.now(), frame_id="map")
+        msg.height = 1
+        msg.width = len(points) // 3
+        msg.fields = [
+            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+        ]
+        msg.is_bigendian = False
+        msg.point_step = 12
+        msg.row_step = msg.point_step * msg.width
+        msg.is_dense = True
+        msg.data = binary
+        self.cloud_pub.publish(msg)
 
     # ---------------------- 任务执行逻辑 ----------------------
     def start_mission(self) -> None:
