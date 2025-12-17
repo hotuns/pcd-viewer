@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 // @ts-expect-error - roslib 没有官方类型定义
 import ROSLIB from "roslib";
 
