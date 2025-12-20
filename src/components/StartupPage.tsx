@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { PlusCircle, Trash2, Play, FileText, Map, Clock, CheckCircle2, RefreshCw, Database, BarChart, ArrowRight, LayoutGrid, List } from "lucide-react";
+import { PlusCircle, Trash2, Play, FileText, Map, Clock, CheckCircle2, RefreshCw, BarChart, ArrowRight, LayoutGrid, List } from "lucide-react";
 
 // 状态显示辅助函数
 const getStatusText = (status: MissionStatus): string => {

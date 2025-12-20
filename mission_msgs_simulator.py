@@ -9,13 +9,15 @@ import math
 import random
 import threading
 import time
-from typing import Optional
+from typing import Optional, List
 
 import rospy
-from geometry_msgs.msg import PoseStamped
+import struct
+from geometry_msgs.msg import Point
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState, PointCloud2, PointField
 from std_msgs.msg import Header
-import struct
+from visualization_msgs.msg import Marker, MarkerArray
 
 from mission_msgs.msg import (
     MissionList,
@@ -53,8 +55,10 @@ class MissionLogicSimulator:
         self.waypoint_pub = rospy.Publisher("/mission/waypoint_feedback", WaypointPosition, queue_size=50)
         self.charge_pub = rospy.Publisher("/hangar/charge_status", HangarChargeStatus, queue_size=10, latch=True)
         self.battery_pub = rospy.Publisher("/battery/status", BatteryState, queue_size=10, latch=True)
-        self.pose_pub = rospy.Publisher("/odom_visualization/pose", PoseStamped, queue_size=20)
+        self.pose_pub = rospy.Publisher("/odom_visualization/pose", Odometry, queue_size=20)
         self.cloud_pub = rospy.Publisher("/grid_map/occupancy_inflate", PointCloud2, queue_size=1)
+        self.marker_pub = rospy.Publisher("/mission/trajectory_marker", Marker, queue_size=10, latch=True)
+        self.marker_array_pub = rospy.Publisher("/mission/trajectory_markers", MarkerArray, queue_size=10, latch=True)
 
         rospy.Subscriber("/mission/list", MissionList, self.on_mission_list)
         rospy.Subscriber("/mission/control", Control, self.on_control)
@@ -73,6 +77,7 @@ class MissionLogicSimulator:
         self._consumption_per_meter = rospy.get_param("~consumption_per_meter", 0.6)
         self._return_threshold = rospy.get_param("~return_threshold", 35.0)
         self._last_completed_index = -1
+        self._trajectory_points: List[Point] = []
 
         self.publish_charge_status(charge_status=2, percentage=100.0)
         self.publish_battery()
@@ -85,6 +90,7 @@ class MissionLogicSimulator:
             self._home_pose = msg.HomePos
             self._mission_id = msg.id
             self._last_completed_index = -1
+            self._trajectory_points = []
         rospy.loginfo("收到 MissionList: %d 个航点", msg.PosNum)
         self.publish_status(STATUS_MISSION_UPLOAD)
 
@@ -159,13 +165,16 @@ class MissionLogicSimulator:
         self.battery_pub.publish(msg)
 
     def publish_pose(self, x: float, y: float, z: float) -> None:
-        pose = PoseStamped()
-        pose.header = Header(stamp=rospy.Time.now(), frame_id="map")
-        pose.pose.position.x = x
-        pose.pose.position.y = y
-        pose.pose.position.z = z
-        pose.pose.orientation.w = 1.0
-        self.pose_pub.publish(pose)
+        odom = Odometry()
+        odom.header = Header(stamp=rospy.Time.now(), frame_id="map")
+        odom.child_frame_id = "base_link"
+        odom.pose.pose.position.x = x
+        odom.pose.pose.position.y = y
+        odom.pose.pose.position.z = z
+        odom.pose.pose.orientation.w = 1.0
+        self.pose_pub.publish(odom)
+        self._trajectory_points.append(Point(x=x, y=y, z=z))
+        self.publish_traj_markers()
         self.publish_point_cloud(x, y, z)
 
     def publish_point_cloud(self, x: float, y: float, z: float) -> None:
@@ -212,6 +221,7 @@ class MissionLogicSimulator:
                 return
             self._running = True
             self._stop_requested = False
+            self._trajectory_points = []
             self._mission_thread = threading.Thread(target=self._mission_worker, daemon=True)
             self._mission_thread.start()
             rospy.loginfo("开始执行任务，共 %d 个航点", len(self._current_mission.PosList))
@@ -302,6 +312,61 @@ class MissionLogicSimulator:
         self.publish_status(STATUS_LANDING)
         time.sleep(1.0)
         self.finish_mission()
+
+    def publish_traj_markers(self) -> None:
+        if not self._trajectory_points:
+            return
+
+        header = Header(stamp=rospy.Time.now(), frame_id="map")
+
+        line_marker = Marker()
+        line_marker.header = header
+        line_marker.ns = "mission_traj"
+        line_marker.id = 0
+        line_marker.type = Marker.LINE_STRIP
+        line_marker.action = Marker.ADD
+        line_marker.scale.x = 0.05
+        line_marker.color.r = 0.2
+        line_marker.color.g = 0.8
+        line_marker.color.b = 0.6
+        line_marker.color.a = 0.85
+        line_marker.points = self._trajectory_points
+        self.marker_pub.publish(line_marker)
+
+        marker_array = MarkerArray()
+        start_marker = Marker()
+        start_marker.header = header
+        start_marker.ns = "mission_traj_points"
+        start_marker.id = 1
+        start_marker.type = Marker.SPHERE
+        start_marker.action = Marker.ADD
+        start_marker.scale.x = 0.3
+        start_marker.scale.y = 0.3
+        start_marker.scale.z = 0.3
+        start_marker.color.r = 0.2
+        start_marker.color.g = 0.8
+        start_marker.color.b = 0.2
+        start_marker.color.a = 0.9
+        start_marker.pose.position = self._trajectory_points[0]
+        marker_array.markers.append(start_marker)
+
+        current_marker = Marker()
+        current_marker.header = header
+        current_marker.ns = "mission_traj_points"
+        current_marker.id = 2
+        current_marker.type = Marker.SPHERE
+        current_marker.action = Marker.ADD
+        current_marker.scale.x = 0.25
+        current_marker.scale.y = 0.25
+        current_marker.scale.z = 0.25
+        current_marker.color.r = 1.0
+        current_marker.color.g = 0.4
+        current_marker.color.b = 0.1
+        current_marker.color.a = 0.95
+        current_marker.pose.position = self._trajectory_points[-1]
+        marker_array.markers.append(current_marker)
+
+        self.marker_array_pub.publish(marker_array)
 
 
 def main() -> None:

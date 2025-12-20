@@ -88,6 +88,17 @@ function yawToQuaternion(yawRad: number) {
   };
 }
 
+const shiftPointCloud = (data: Float32Array, origin?: { x: number; y: number; z: number } | null) => {
+  if (!origin) return data;
+  const shifted = new Float32Array(data.length);
+  for (let i = 0; i < data.length; i += 3) {
+    shifted[i] = data[i] - origin.x;
+    shifted[i + 1] = data[i + 1] - origin.y;
+    shifted[i + 2] = data[i + 2] - origin.z;
+  }
+  return shifted;
+};
+
 function makeEvent(level: MissionRuntimeEvent["level"], message: string, details?: Record<string, unknown>): MissionRuntimeEvent {
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -107,6 +118,7 @@ export function useMissionRuntime({
   options,
 }: UseMissionRuntimeParams) {
   const endpoints = useMemo(() => ({ ...DEFAULT_ENDPOINTS, ...(options?.endpoints ?? {}) }), [options?.endpoints]);
+  const origin = home?.position ?? null;
   const [phase, setPhase] = useState<MissionPhase>("idle");
   const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
   const [hangar, setHangar] = useState<HangarChargeTelemetry | null>(null);
@@ -270,20 +282,31 @@ export function useMissionRuntime({
     poseTopic.current = new ROSLIB.Topic({
       ros,
       name: endpoints.poseTopic,
-      messageType: "geometry_msgs/PoseStamped",
+      messageType: "nav_msgs/Odometry",
     });
 
     poseTopic.current.subscribe((msg: {
-      pose: {
-        position: { x: number; y: number; z: number };
-        orientation: { x: number; y: number; z: number; w: number };
+      pose?: {
+        pose?: {
+          position: { x: number; y: number; z: number };
+          orientation: { x: number; y: number; z: number; w: number };
+        };
       };
     }) => {
+      const poseData = msg.pose?.pose;
+      if (!poseData) return;
+      const localPosition = origin
+        ? {
+            x: poseData.position.x - origin.x,
+            y: poseData.position.y - origin.y,
+            z: poseData.position.z - origin.z,
+          }
+        : poseData.position;
       setDronePosition({
-        x: msg.pose.position.x,
-        y: msg.pose.position.y,
-        z: msg.pose.position.z,
-        orientation: msg.pose.orientation,
+        x: localPosition.x,
+        y: localPosition.y,
+        z: localPosition.z,
+        orientation: poseData.orientation,
       });
     });
 
@@ -310,11 +333,19 @@ export function useMissionRuntime({
       messageType: "sensor_msgs/PointCloud2",
     });
 
-    pointCloudTopicRef.current.subscribe((msg: any) => {
+    pointCloudTopicRef.current.subscribe((msg: {
+      header: { frame_id: string };
+      data: string;
+      point_step: number;
+      row_step: number;
+      width: number;
+      height: number;
+    }) => {
       try {
         const parsed = createGridMapDataFromPointCloud2(msg);
+        const shifted = shiftPointCloud(parsed.data, origin);
         setPointCloudStack((prev) => {
-          const next = [parsed.data, ...prev];
+          const next = [shifted, ...prev];
           return next.slice(0, 10);
         });
       } catch (error) {
@@ -325,7 +356,7 @@ export function useMissionRuntime({
     return () => {
       resetRosBindings();
     };
-  }, [rosConnected, rosRef, endpoints, pushEvent, resetRosBindings]);
+  }, [rosConnected, rosRef, endpoints, pushEvent, resetRosBindings, origin]);
 
   const callMissionCommand = useCallback(async (command: number) => {
     if (!missionCommandService.current) throw new Error("MissionCommand 服务未就绪");

@@ -80,15 +80,25 @@ export async function POST(request: NextRequest) {
   }
 }
 
-function normalizeMissionPayload(payload: any) {
+type MissionPayload = Partial<Omit<Mission, "createdAt" | "startedAt" | "completedAt" | "executionLog">> & {
+  createdAt?: string | number | Date | null;
+  startedAt?: string | number | Date | null;
+  completedAt?: string | number | Date | null;
+  executionLog?: Array<{ timestamp: string | number | Date; event: string; details?: Record<string, unknown> }>;
+};
+
+function normalizeMissionPayload(payload: MissionPayload) {
   if (!payload || typeof payload !== "object") return payload;
-  const normalized = { ...payload };
+  const normalized: MissionPayload = { ...payload };
   const parseDate = (value: unknown) => {
     if (value === undefined) return undefined;
     if (value === null) return null;
     if (value instanceof Date) return value;
-    const parsed = new Date(value as string | number);
-    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    if (typeof value === "number" || typeof value === "string") {
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    }
+    return undefined;
   };
 
   (["createdAt", "startedAt", "completedAt"] as const).forEach((key) => {
@@ -103,7 +113,7 @@ function normalizeMissionPayload(payload: any) {
   });
 
   if (Array.isArray(normalized.executionLog)) {
-    normalized.executionLog = normalized.executionLog.map((log: any) => {
+    normalized.executionLog = normalized.executionLog.map((log) => {
       const parsedTs = parseDate(log?.timestamp);
       return parsedTs ? { ...log, timestamp: parsedTs } : log;
     });

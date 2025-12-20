@@ -40,6 +40,7 @@ export default function TrajectoryEditor({
   const [loading, setLoading] = useState(false);
   const [meta, setMeta] = useState<{ name?: string; coord?: string; note?: string }>({});
   const [points, setPoints] = useState<Waypoint[]>([]);
+  const [manualInput, setManualInput] = useState<{ x: string; y: string; z: string }>({ x: "", y: "", z: "" });
   const hasTrajectory = !!mission.trajectory;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -100,6 +101,20 @@ export default function TrajectoryEditor({
     const next = [...points, { x: 0, y: 0, z: 0, t: (points.at(-1)?.t ?? -1) + 1 }];
     setPoints(next);
     onPointsChangeAction?.(next);
+  };
+  const addManualPoint = () => {
+    if (!isEditable) return;
+    const x = Number(manualInput.x);
+    const y = Number(manualInput.y);
+    const z = Number(manualInput.z);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      alert("请输入有效的数字坐标");
+      return;
+    }
+    const next = [...points, { x, y, z, t: (points.at(-1)?.t ?? -1) + 1 }];
+    setPoints(next);
+    onPointsChangeAction?.(next);
+    setManualInput({ x: "", y: "", z: "" });
   };
   const removePoint = (idx: number) => {
     if (!isEditable) return;
@@ -165,6 +180,27 @@ export default function TrajectoryEditor({
         <Button size="sm" onClick={addPoint} className="h-8 gap-1" disabled={!isEditable}>
           <Plus className="w-3.5 h-3.5" />
           <span className="hidden sm:inline">新增点</span>
+        </Button>
+      </div>
+
+      <div className="rounded-lg border border-dashed border-muted/60 p-3 text-xs space-y-2">
+        <div className="text-xs font-semibold text-muted-foreground">手动输入航点</div>
+        <div className="grid grid-cols-3 gap-2">
+          {(["x", "y", "z"] as const).map((axis) => (
+            <Input
+              key={axis}
+              type="number"
+              inputMode="decimal"
+              placeholder={axis.toUpperCase()}
+              value={manualInput[axis]}
+              onChange={(e) => setManualInput((prev) => ({ ...prev, [axis]: e.target.value }))}
+              className="h-7 text-xs bg-background"
+              disabled={!isEditable}
+            />
+          ))}
+        </div>
+        <Button size="sm" className="w-full h-7 text-xs" onClick={addManualPoint} disabled={!isEditable}>
+          手动添加
         </Button>
       </div>
 

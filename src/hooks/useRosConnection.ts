@@ -5,10 +5,31 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ROSLIB from "roslib";
 
 export function useRosConnection(initialUrl: string = "ws://192.168.203.30:9999") {
-  const [rosUrl, setRosUrl] = useState(initialUrl);
+  const STORAGE_KEY = "pcd-viewer.ros-url";
+  const [rosUrl, setRosUrlState] = useState(initialUrl);
   const [rosConnected, setRosConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const rosRef = useRef<typeof ROSLIB.Ros | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      setRosUrlState(saved);
+    }
+  }, [initialUrl]);
+
+  const persistRosUrl = useCallback((value: string) => {
+    setRosUrlState(value);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(STORAGE_KEY, value);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(STORAGE_KEY, rosUrl);
+  }, [rosUrl]);
 
   const connectROS = useCallback(() => {
     if (!rosUrl) return;
@@ -64,7 +85,7 @@ export function useRosConnection(initialUrl: string = "ws://192.168.203.30:9999"
 
   return {
     rosUrl,
-    setRosUrl,
+    setRosUrl: persistRosUrl,
     rosConnected,
     rosRef,
     connectROS,

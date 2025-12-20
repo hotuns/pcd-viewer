@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, Suspense } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, Suspense } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Grid, OrbitControls, Line, TransformControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -231,7 +231,13 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
   const selectedIdxRef = useRef<number | null>(null);
   const isControlledSelection = typeof selectedPointIndex === "number" || selectedPointIndex === null;
   const selectedIdx = isControlledSelection ? (selectedPointIndex ?? null) : internalSelectedIdx;
-  const setSelectedIdx = onSelectPoint ?? setInternalSelectedIdx;
+  const setSelectedIdx = useCallback((value: number | null) => {
+    if (typeof onSelectPoint === "function") {
+      onSelectPoint(value);
+    } else {
+      setInternalSelectedIdx(value);
+    }
+  }, [onSelectPoint]);
   const [pathVersion, setPathVersion] = useState(0);
   useEffect(() => {
     setPathVersion((v) => {
@@ -281,9 +287,9 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
     const handleObjectChange = () => {
       const idx = selectedIdxRef.current;
       const pts = plannedPointsRef.current;
-      const object = transformControls.object;
-      if (!object || idx == null || !pts || idx < 0 || idx >= pts.length) return;
-      const pos = object.position;
+      const pointObject = idx != null ? pointRefs.current[idx] : null;
+      if (!pointObject || !pts || idx == null || idx < 0 || idx >= pts.length) return;
+      const pos = pointObject.position;
       const next = pts.map((pt, i) =>
         i === idx ? { x: pos.x, y: pos.y, z: pos.z } : pt
       );
@@ -301,12 +307,16 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         }
       }
     };
-    transformControls.addEventListener("objectChange", handleObjectChange);
-    transformControls.addEventListener("dragging-changed", handleDraggingChanged);
+    const controlsEvents = transformControls as unknown as {
+      addEventListener: (type: string, listener: (...args: unknown[]) => void) => void;
+      removeEventListener: (type: string, listener: (...args: unknown[]) => void) => void;
+    };
+    controlsEvents.addEventListener("objectChange", handleObjectChange as (...args: unknown[]) => void);
+    controlsEvents.addEventListener("dragging-changed", handleDraggingChanged as (...args: unknown[]) => void);
     return () => {
       console.debug("[GIZMO] unregister events");
-      transformControls.removeEventListener("objectChange", handleObjectChange);
-      transformControls.removeEventListener("dragging-changed", handleDraggingChanged);
+      controlsEvents.removeEventListener("objectChange", handleObjectChange as (...args: unknown[]) => void);
+      controlsEvents.removeEventListener("dragging-changed", handleDraggingChanged as (...args: unknown[]) => void);
     };
   }, [transformControls]);
 
@@ -619,7 +629,6 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           <VoxelizedPointCloud 
             geometry={geom} 
             voxelSize={voxelSize}
-            colorMode={colorMode}
           />
         )}
         
@@ -739,7 +748,8 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
                       onPlannedPointsChangeRef.current?.(next);
                       return;
                     }
-                    setSelectedIdx(prev => (prev === i ? null : i));
+                    const nextIdx = selectedIdx === i ? null : i;
+                    setSelectedIdx(nextIdx);
                   }}
                 >
                   <sphereGeometry args={[Math.max(0.001, plannedPointSize * (isActive ? 1.3 : 1)), 16, 16]} />
