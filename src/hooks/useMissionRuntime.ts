@@ -9,7 +9,10 @@ import type {
   HangarChargeTelemetry,
   BatteryTelemetry,
   DronePosition,
+  PlannedPoint,
+  TaskType,
 } from "@/types/mission";
+import { normalizeTaskType, serializeTaskType } from "@/lib/taskTypes";
 import { createGridMapDataFromPointCloud2 } from "@/lib/pointCloudParser";
 // @ts-expect-error - roslib 没有类型声明
 import ROSLIB from "roslib";
@@ -47,8 +50,9 @@ type UseMissionRuntimeParams = {
   rosConnected: boolean;
   rosRef: React.MutableRefObject<typeof ROSLIB.Ros | null>;
   mission: Mission | null;
-  plannedPoints: Array<{ x: number; y: number; z: number }> | null;
+  plannedPoints: PlannedPoint[] | null;
   home: MissionHomePosition | null;
+  emergency?: MissionHomePosition | null;
   options?: {
     droneId?: number;
     endpoints?: Partial<Endpoints>;
@@ -115,6 +119,7 @@ export function useMissionRuntime({
   mission,
   plannedPoints,
   home,
+  emergency,
   options,
 }: UseMissionRuntimeParams) {
   const endpoints = useMemo(() => ({ ...DEFAULT_ENDPOINTS, ...(options?.endpoints ?? {}) }), [options?.endpoints]);
@@ -129,8 +134,8 @@ export function useMissionRuntime({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [lastWaypoint, setLastWaypoint] = useState<{ index: number; info?: string; position?: { x: number; y: number; z: number } } | null>(null);
   const [autoReturnTriggered, setAutoReturnTriggered] = useState(false);
-  const [pendingWaypoints, setPendingWaypoints] = useState<Array<{ x: number; y: number; z: number; task_type?: string; info?: string }>>([]);
-  const pendingWaypointsRef = useRef<Array<{ x: number; y: number; z: number; task_type?: string; info?: string }>>([]);
+  const [pendingWaypoints, setPendingWaypoints] = useState<PlannedPoint[]>([]);
+  const pendingWaypointsRef = useRef<PlannedPoint[]>([]);
   const [pointCloudStack, setPointCloudStack] = useState<Float32Array[]>([]);
 
   const missionCommandService = useRef<typeof ROSLIB.Service | null>(null);
@@ -198,7 +203,7 @@ export function useMissionRuntime({
     missionStatusTopic.current.subscribe((msg: {
       status?: number;
       PosNum?: number;
-      PosList?: Array<{ x: number; y: number; z: number; pass_type?: boolean; task_type?: string; info?: string }>;
+      PosList?: Array<{ x: number; y: number; z: number; pass_type?: boolean; task_type?: string | number; info?: string }>;
     }) => {
       const nextPhase = mapStatusToPhase(msg.status);
       setPhase(nextPhase);
@@ -220,7 +225,7 @@ export function useMissionRuntime({
           x: p.x,
           y: p.y,
           z: p.z,
-          task_type: p.task_type,
+          task_type: normalizeTaskType(p.task_type),
           info: p.info,
         }));
         setPendingWaypoints(remaining);
@@ -419,7 +424,7 @@ export function useMissionRuntime({
     }
   }, [mission, pushEvent]);
 
-  const sendMissionList = useCallback(async (pointsToUpload: Array<{ x: number; y: number; z: number; task_type?: string; info?: string }>, label: string) => {
+  const sendMissionList = useCallback(async (pointsToUpload: PlannedPoint[], label: string) => {
     if (!missionListTopic.current) throw new Error("MissionList 话题未连接");
     if (!mission) throw new Error("请先选择任务");
     if (!home) throw new Error("请先设置 HomePos");
@@ -434,7 +439,8 @@ export function useMissionRuntime({
       x: p.x,
       y: p.y,
       z: p.z,
-      task_type: p.task_type ?? "0",
+      w: p.w,
+      task_type: normalizeTaskType(p.task_type) ?? 0,
       info: p.info ?? `wp-${index}`,
     }));
     try {
@@ -453,7 +459,7 @@ export function useMissionRuntime({
           y: p.y,
           z: p.z,
           pass_type: false,
-          task_type: p.task_type,
+          task_type: serializeTaskType(p.task_type),
           info: p.info,
         })),
       });
@@ -472,6 +478,20 @@ export function useMissionRuntime({
     await sendMissionList(plannedPoints, "任务列表已上传");
   }, [plannedPoints, sendMissionList]);
 
+  const uploadSinglePointMission = useCallback(async (pose: MissionHomePosition, taskType: TaskType, label: string) => {
+    const singlePoint: PlannedPoint = {
+      x: pose.position.x,
+      y: pose.position.y,
+      z: pose.position.z,
+      w: pose.yaw,
+      task_type: taskType,
+      info: label,
+    };
+    await sendMissionList([singlePoint], label);
+    await publishTaskOpt(TASK_OPT_CMDS.START, `${label}-TaskOpt`);
+    await publishControl(CONTROL_CMDS.EXECUTE);
+  }, [publishControl, publishTaskOpt, sendMissionList]);
+
   const resumeMission = useCallback(async () => {
     const remaining = pendingWaypointsRef.current;
     if (!remaining || remaining.length === 0) {
@@ -482,6 +502,16 @@ export function useMissionRuntime({
     await publishTaskOpt(TASK_OPT_CMDS.START, "TaskOpt 启动剩余任务");
     await publishControl(CONTROL_CMDS.EXECUTE);
   }, [publishControl, publishTaskOpt, sendMissionList, pushEvent]);
+
+  const uploadReturnMission = useCallback(async () => {
+    if (!home) throw new Error("请先设置 HomePos");
+    await uploadSinglePointMission(home, 0, "返航航线");
+  }, [home, uploadSinglePointMission]);
+
+  const uploadEmergencyMission = useCallback(async () => {
+    if (!emergency) throw new Error("请先设置迫降点");
+    await uploadSinglePointMission(emergency, 5, "迫降航线");
+  }, [emergency, uploadSinglePointMission]);
 
   const handleTakeoff = useCallback(() => publishControl(CONTROL_CMDS.TAKEOFF), [publishControl]);
   const handleExecute = useCallback(async () => {
@@ -533,6 +563,8 @@ export function useMissionRuntime({
       openHangar: handleOpenHangar,
       closeHangar: handleCloseHangar,
       uploadMission,
+      uploadReturnMission,
+      uploadEmergencyMission,
       executeMission: handleExecute,
       takeoff: handleTakeoff,
       returnHome: handleReturnHome,

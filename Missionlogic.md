@@ -32,6 +32,13 @@ flowchart LR
 - 任务完成 — 任务达到目标条件或时间窗口结束。
 - 降落 — 返回并着陆到机库或指定降落点。
 
+## 规划约束（前端已实现）
+- 规划阶段必须先配置 HomePos 以及迫降点，UI 已强制校验。
+- 航线首尾自动锁定为 HomePos，用户新增/删除航点仅作用在中间段。
+- 每个航点包含 `(x, y, z, w)`，其中 `w` 为偏航角（弧度）。
+- `task_type` 使用数字枚举：`0=无动作`、`1=前视`、`2=左视`、`3=右视`、`4=RFID`、`5=迫降`。上传 MissionList 时仍放在字符串字段里，但数值来自该枚举。
+- 规划面板提供航线宽度/航点大小调节，并实时作用于 3D 视图。
+
 飞行过程中，当电池电压低于XXV后，地面软件发送更新的回家任务，回家点是任务列表里面的HomePos，然后发送任务执行命令，飞机会执行新的回家任务，回到HomePos点，回到后会发送回到该点状态，可执行land指令，无人机降落到平台上后，发送armoff停机，开始充电，充电完成后，机库发送充电完成消息，地面站可发送打开机库，检测机库ready状态，完成后重新发送后续的轨迹点组成任务进行执行。
 
 
@@ -117,10 +124,13 @@ WaypointPosition[] PosList         #航点列表
 float64 x
 float64 y
 float64 z
+float64 w  # 偏航角（弧度），UI 显示时以度为单位
 bool pass_type      #航点是否通过，0未通过，1通过
-string task_type    #航点处需要执行的任务类型 1、代表云台向前拍摄；2、代表云台向左拍摄；3、代表云台向右拍摄；4、代表RFID收数据
+string task_type    #航点处需要执行的任务类型，以数字字符串传输：0=无动作、1=前视、2=左视、3=右视、4=RFID、5=迫降
 string info
 ```
+
+
 
 4. 降落
 发送降落指令，takeoffland.msg
@@ -134,3 +144,9 @@ px4ctrl（浙大开源控制器）降落逻辑：
 	2.若接收到quadrotor_msgs::TakeoffLand消息的takeoff_land_cmd成员的值等于2，发布控制指令/mavros/setpoint_raw/attitude（消息类型：mavros_msgs::AttitudeTarget），px4接收此topic，控制飞机降落
 
 5. 电池电量信息
+
+## 运行控制扩展（地面站）
+- **返航航线按钮**：上传仅含 HomePos 的 MissionList，并立即执行。用于主动召回。
+- **迫降航线按钮**：上传仅含“迫降点”的 MissionList，并将 `task_type` 置为 5。用于紧急降落。
+- 两个按钮都会先上传任务、再发布 TaskOpt START + 控制 EXECUTE，以保证飞行控制器按照新的任务执行。
+- Mission UI 新增“机库控制” Tab，提供机库门开关、充电状态（百分比/功率/时长）以及 ARM OFF。

@@ -7,12 +7,12 @@
     "safe_altitude": 2.5
   },
   "points": [
-    { "x": 0,  "y": 0,  "z": 1.5, "t": 0,  "task_type": "takeoff",      "info": "起飞抬升" },
-    { "x": 6,  "y": 0,  "z": 2.5, "t": 5,  "task_type": "photo-forward", "info": "门口前视检查" },
-    { "x": 6,  "y": 8,  "z": 2.8, "t": 12, "task_type": "photo-left",    "info": "仓库 A 边左侧" },
-    { "x": 0,  "y": 8,  "z": 2.6, "t": 18, "task_type": "rfid",          "info": "RFID 点位" },
-    { "x": -6, "y": 8,  "z": 2.4, "t": 24, "task_type": "photo-right",   "info": "仓库 B 边右侧" },
-    { "x": -6, "y": 0,  "z": 2.3, "t": 30, "task_type": "photo-forward", "info": "回程前视" },
-    { "x": 0,  "y": 0,  "z": 1.5, "t": 38, "task_type": "landing",       "info": "返回机库" }
+    { "x": 0,  "y": 0,  "z": 1.5, "w": 0, "t": 0,  "task_type": 0, "info": "起飞抬升" },
+    { "x": 6,  "y": 0,  "z": 2.5, "w": 0, "t": 5,  "task_type": 1, "info": "门口前视检查" },
+    { "x": 6,  "y": 8,  "z": 2.8, "w": 1.57, "t": 12, "task_type": 2, "info": "仓库 A 边左侧" },
+    { "x": 0,  "y": 8,  "z": 2.6, "w": 3.14, "t": 18, "task_type": 4, "info": "RFID 点位" },
+    { "x": -6, "y": 8,  "z": 2.4, "w": -1.57, "t": 24, "task_type": 3, "info": "仓库 B 边右侧" },
+    { "x": -6, "y": 0,  "z": 2.3, "w": -3.14, "t": 30, "task_type": 1, "info": "回程前视" },
+    { "x": 0,  "y": 0,  "z": 1.5, "w": 0, "t": 38, "task_type": 0, "info": "返回机库" }
   ]
 }

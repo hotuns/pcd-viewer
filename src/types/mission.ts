@@ -85,6 +85,18 @@ export interface MissionRuntimeSnapshot {
   };
 }
 
+export type TaskType = 0 | 1 | 2 | 3 | 4 | 5;
+
+export interface PlannedPoint {
+  x: number;
+  y: number;
+  z: number;
+  w?: number;
+  t?: number;
+  task_type?: TaskType;
+  info?: string;
+}
+
 // 航点状态枚举
 export type WaypointStatus = 
   | 'pending'    // 待执行
@@ -97,6 +109,8 @@ export interface Waypoint {
   x: number;
   y: number;
   z: number;
+  yaw?: number;
+  taskType?: TaskType;
   id: string;
   status: WaypointStatus;
   completedAt?: Date;
@@ -109,6 +123,7 @@ export interface Mission {
   scene?: Source;  // 点云场景
   trajectory?: Source;  // 航线轨迹
   home?: MissionHomePosition;
+  emergency?: MissionHomePosition;
   status: MissionStatus;
   waypoints?: Waypoint[];  // 航点状态信息
   currentWaypointIndex?: number;  // 当前目标航点索引

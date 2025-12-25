@@ -7,7 +7,7 @@ import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl, TransformControls as TransformControlsImpl } from "three-stdlib";
 import { PCDLoader } from "three/examples/jsm/loaders/PCDLoader.js";
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
-import type { Source, DronePosition, Waypoint } from "@/types/mission";
+import type { Source, DronePosition, Waypoint, PlannedPoint } from "@/types/mission";
 import { DroneModel } from "./DroneModel";
 import { CameraFollower } from "./CameraFollower";
 import { VoxelizedPointCloud } from "./VoxelizedPointCloud";
@@ -17,6 +17,8 @@ export type PCDCanvasHandle = {
   zoomToCenter: () => void;
   orientToPlane: (plane: 'xy'|'xz'|'yz') => void;
 };
+
+THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
 export type PCDCanvasProps = {
   source?: Source | null;
@@ -31,11 +33,12 @@ export type PCDCanvasProps = {
   voxelSize?: number; // 体素大小（米）
   onLoadedAction?: (info: { bbox: THREE.Box3; count: number }) => void;
   onLoadingChange?: (loading: boolean) => void;
-  plannedPathPoints?: Array<{ x: number; y: number; z: number }>; // 用于渲染编辑航线
+  plannedPathPoints?: PlannedPoint[]; // 用于渲染编辑航线
   plannedPathVisible?: boolean;
   plannedPointSize?: number; // 航点球体大小（半径）
+  plannedPathLineWidth?: number;
   plannedPathEditable?: boolean; // 是否支持在 3D 中拖拽编辑
-  onPlannedPointsChange?: (points: Array<{ x: number; y: number; z: number }>) => void; // 拖拽时回传
+  onPlannedPointsChange?: (points: PlannedPoint[]) => void; // 拖拽时回传
   selectedPointIndex?: number | null;
   onSelectPoint?: (index: number | null) => void;
   dronePosition?: DronePosition | null; // 无人机位置和姿态
@@ -62,7 +65,8 @@ function SceneFitter({
       const radius = Math.max(size.x, size.y, size.z) * 0.75 || 1;
       const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
       const dist = radius / Math.tan(fov / 2);
-      const newPos = new THREE.Vector3(center.x + dist, center.y + dist, center.z + dist);
+      camera.up.set(0, 0, 1);
+      const newPos = new THREE.Vector3(center.x + dist, center.y - dist, center.z + dist);
       camera.position.copy(newPos);
       camera.near = Math.max(0.01, dist / 100);
       camera.far = dist * 1000;
@@ -85,7 +89,7 @@ function CameraOrienter({
   registerOrient,
 }: {
   bbox: THREE.Box3 | null;
-  plannedPoints?: Array<{ x: number; y: number; z: number }>;
+  plannedPoints?: PlannedPoint[];
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
   registerOrient: (fn: (plane: 'xy'|'xz'|'yz') => void) => void;
 }) {
@@ -154,7 +158,7 @@ function SceneResetter({
       const defaultTarget = new THREE.Vector3(0, 0, 0);
       
       camera.position.copy(defaultPos);
-      camera.up.set(0, 1, 0); // Reset up vector
+      camera.up.set(0, 0, 1);
       camera.lookAt(defaultTarget);
       camera.updateProjectionMatrix();
       
@@ -170,7 +174,7 @@ function SceneResetter({
 }
 
 export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PCDCanvas(
-  { source, livePointClouds = [], pointSize = 0.01, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, voxelized = false, voxelSize = 0.05, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathEditable = false, onPlannedPointsChange, selectedPointIndex, onSelectPoint, dronePosition, followDrone = false, waypoints, currentWaypointIndex },
+  { source, livePointClouds = [], pointSize = 0.01, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, voxelized = false, voxelSize = 0.05, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathLineWidth = 2, plannedPathEditable = false, onPlannedPointsChange, selectedPointIndex, onSelectPoint, dronePosition, followDrone = false, waypoints, currentWaypointIndex },
   ref
 ) {
   const [geom, setGeom] = useState<THREE.BufferGeometry | null>(null);
@@ -291,7 +295,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
       if (!pointObject || !pts || idx == null || idx < 0 || idx >= pts.length) return;
       const pos = pointObject.position;
       const next = pts.map((pt, i) =>
-        i === idx ? { x: pos.x, y: pos.y, z: pos.z } : pt
+        i === idx ? { ...pt, x: pos.x, y: pos.y, z: pos.z } : pt
       );
       plannedPointsRef.current = next;
       console.debug("[GIZMO] updating point", idx, { x: pos.x, y: pos.y, z: pos.z });
@@ -605,7 +609,20 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         />
         
         {showGrid && (
-          <Grid args={[10, 10]} cellColor="#2a2a2a" sectionColor="#3a3a3a" infiniteGrid />
+          <Grid
+            position={[0, 0, 0]}
+            args={[10, 10]}
+            cellSize={1}
+            cellThickness={0.4}
+            sectionSize={5}
+            sectionThickness={1}
+            fadeDistance={60}
+            fadeStrength={1}
+            infiniteGrid
+            rotation={[-Math.PI / 2, 0, 0]}
+            cellColor="#2a2a2a"
+            sectionColor="#3a3a3a"
+          />
         )}
         {showAxes && <axesHelper args={[50]} />}
         
@@ -664,7 +681,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
                     key={`line-full-${pathVersion}`}
                     points={plannedPathPoints.map(p => [p.x, p.y, p.z]) as [number, number, number][]}
                     color="#94a3b8"
-                    lineWidth={2}
+                    lineWidth={plannedPathLineWidth}
                     dashed={false}
                     depthTest
                     opacity={0.8}
@@ -682,7 +699,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
                   key={`line-pending-${pathVersion}-${pendingPoints.length}`}
                   points={pendingPoints}
                   color="#94a3b8"
-                  lineWidth={2}
+                  lineWidth={plannedPathLineWidth}
                   dashed={false}
                   depthTest
                   opacity={0.8}
@@ -703,7 +720,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
                     key={`line-completed-${pathVersion}-${endIdx}`}
                     points={pts}
                     color="#22c55e"
-                    lineWidth={3}
+                    lineWidth={Math.max(plannedPathLineWidth, 1) + 1}
                     dashed={false}
                     depthTest
                     opacity={1}

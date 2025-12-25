@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { MissionPhase, HangarChargeTelemetry, BatteryTelemetry, MissionRuntimeEvent } from "@/types/mission";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { BatteryCharging, Home, Upload, PlaneLanding, RefreshCw, Warehouse, PowerOff } from "lucide-react";
+import { BatteryCharging, Home, Upload, PlaneLanding, RefreshCw, Warehouse, PowerOff, AlertTriangle, Shield, Map } from "lucide-react";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 const phaseLabelMap: Record<MissionPhase, string> = {
   idle: "未执行",
@@ -18,11 +20,11 @@ const phaseLabelMap: Record<MissionPhase, string> = {
 };
 
 const hangarStatusMap: Record<number, { text: string; tone: string }> = {
-  0: { text: "待命", tone: "text-muted-foreground" },
-  1: { text: "充电中", tone: "text-amber-500" },
-  2: { text: "充电完成", tone: "text-green-500" },
-  3: { text: "充电错误", tone: "text-red-500" },
-  4: { text: "设备离线", tone: "text-muted-foreground" },
+  0: { text: "待命", tone: "text-slate-400" },
+  1: { text: "充电中", tone: "text-amber-400" },
+  2: { text: "充电完成", tone: "text-green-400" },
+  3: { text: "充电错误", tone: "text-red-400" },
+  4: { text: "设备离线", tone: "text-slate-500" },
 };
 
 interface MissionRuntimePanelProps {
@@ -41,6 +43,8 @@ interface MissionRuntimePanelProps {
   onOpenHangar: () => Promise<void> | void;
   onCloseHangar: () => Promise<void> | void;
   onUploadMission: () => Promise<void> | void;
+  onUploadReturnMission?: () => Promise<void> | void;
+  onUploadEmergencyMission?: () => Promise<void> | void;
   onResumeMission?: () => Promise<void> | void;
   onExecuteMission: () => Promise<void> | void;
   onTakeoff?: () => Promise<void> | void;
@@ -65,6 +69,8 @@ export function MissionRuntimePanel({
   onOpenHangar,
   onCloseHangar,
   onUploadMission,
+  onUploadReturnMission,
+  onUploadEmergencyMission,
   onResumeMission,
   onExecuteMission,
   onTakeoff,
@@ -75,6 +81,15 @@ export function MissionRuntimePanel({
   const actionDisabled = !rosConnected || !!busyAction;
   const batteryPct = battery?.percentage ?? null;
   const progressPct = progress && progress.total > 0 ? (progress.completed / progress.total) * 100 : 0;
+  const [controlTab, setControlTab] = useState<"mission" | "hangar">("mission");
+  const runAsyncAction = async (fn?: () => Promise<void> | void) => {
+    if (actionDisabled || !fn) return;
+    try {
+      await fn();
+    } catch (err) {
+      console.warn("Mission runtime action failed", err);
+    }
+  };
   const handleStartMission = async () => {
     if (actionDisabled) return;
     try {
@@ -102,11 +117,11 @@ export function MissionRuntimePanel({
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4 text-slate-100">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-xs text-muted-foreground">Missionlogic 状态</div>
-          <div className="text-lg font-semibold flex items-center gap-2">
+          <div className="text-[11px] uppercase text-slate-400 tracking-wide">Missionlogic</div>
+          <div className="text-base font-semibold flex items-center gap-2">
             {phaseLabelMap[phase]}
             <Badge variant={phase === "error" ? "destructive" : "outline"} className="text-[10px]">
               {rosConnected ? "ROS 已连接" : "ROS 未连接"}
@@ -116,23 +131,23 @@ export function MissionRuntimePanel({
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <div className="rounded-xl border p-3 space-y-2">
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <div className="border border-slate-700 bg-slate-900 p-3 space-y-1 rounded">
+          <div className="flex items-center justify-between text-[11px] text-slate-400">
             <span className="flex items-center gap-1"><Warehouse className="h-3.5 w-3.5" />机库</span>
             <span className={hangarStatusMap[hangar?.status ?? 0]?.tone}>{hangarStatusMap[hangar?.status ?? 0]?.text}</span>
           </div>
-          <div className="text-sm text-muted-foreground">
-            充电: {hangar?.percentage ?? 0}% · 功率 {hangar?.power?.toFixed?.(1) ?? "0"}W
+          <div className="text-xs text-slate-300">
+            充电 {hangar?.percentage ?? 0}% · 功率 {hangar?.power?.toFixed?.(1) ?? "0"}W
           </div>
         </div>
-        <div className="rounded-xl border p-3 space-y-2">
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <div className="border border-slate-700 bg-slate-900 p-3 space-y-1 rounded">
+          <div className="flex items-center justify-between text-[11px] text-slate-400">
             <span className="flex items-center gap-1"><BatteryCharging className="h-3.5 w-3.5" />电池</span>
             {batteryPct != null && (
-              <span className={batteryPct < 25 ? "text-red-500" : "text-foreground"}>{batteryPct.toFixed(1)}%</span>
+              <span className={batteryPct < 25 ? "text-red-400" : "text-slate-200"}>{batteryPct.toFixed(1)}%</span>
             )}
           </div>
-          <div className="text-sm text-muted-foreground">
+          <div className="text-xs text-slate-300">
             电压 {battery?.voltage?.toFixed?.(2) ?? "--"} V
           </div>
         </div>
@@ -162,40 +177,160 @@ export function MissionRuntimePanel({
       )}
 
       {canResume && onResumeMission && (
-        <Button
-          size="sm"
-          className="w-full h-9 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white"
-          onClick={onResumeMission}
-          disabled={!!busyAction}
-        >
-          <RefreshCw className="h-4 w-4 mr-2" />
-          继续任务（{pendingCount} 点）
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              className="h-9 w-9 bg-emerald-600 hover:bg-emerald-500 text-white"
+              onClick={onResumeMission}
+              disabled={!!busyAction}
+            >
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>继续任务（{pendingCount} 点）</TooltipContent>
+        </Tooltip>
       )}
 
-      <div className="grid grid-cols-2 gap-2">
-        <Button size="sm" variant="secondary" onClick={onOpenHangar} disabled title="待实现" className="justify-start">
-          <Home className="h-4 w-4 mr-2" /> 打开机库
-        </Button>
-        <Button size="sm" variant="secondary" onClick={onCloseHangar} disabled title="待实现" className="justify-start">
-          <Home className="h-4 w-4 mr-2" /> 关闭机库
-        </Button>
-        <Button size="sm" onClick={onUploadMission} disabled={actionDisabled || !missionReady} className="justify-start">
-          <Upload className="h-4 w-4 mr-2" /> 上传任务
-        </Button>
-        <Button size="sm" variant="outline" onClick={handleStartMission} disabled={actionDisabled} className="justify-start col-span-2">
-          <RefreshCw className="h-4 w-4 mr-2" /> 起飞并执行
-        </Button>
-        <Button size="sm" variant="outline" onClick={handleReturnAndLand} disabled={actionDisabled} className="justify-start col-span-2">
-          <PlaneLanding className="h-4 w-4 mr-2" /> 返航并降落
-        </Button>
-        <Button size="sm" variant="destructive" onClick={onArmOff} disabled={actionDisabled} className="justify-start">
-          <PowerOff className="h-4 w-4 mr-2" /> ARM OFF
-        </Button>
+      <div className="flex items-center gap-2">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant={controlTab === "mission" ? "default" : "outline"}
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => setControlTab("mission")}
+            >
+              <Map className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>任务控制</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant={controlTab === "hangar" ? "default" : "outline"}
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => setControlTab("hangar")}
+            >
+              <Warehouse className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>机库控制</TooltipContent>
+        </Tooltip>
       </div>
-      {!missionReady && (
-        <div className="text-[11px] text-amber-500 bg-amber-500/10 rounded px-3 py-1">
-          请先配置航线与 HomePos 后再上传任务
+
+      {controlTab === "mission" ? (
+        <div className="flex flex-wrap gap-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                onClick={() => { void runAsyncAction(onUploadMission); }}
+                disabled={actionDisabled || !missionReady}
+              >
+                <Upload className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>上传任务</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                variant="outline"
+                onClick={handleStartMission}
+                disabled={actionDisabled}
+              >
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>起飞并执行</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                variant="secondary"
+                onClick={() => { void runAsyncAction(onUploadReturnMission); }}
+                disabled={actionDisabled || !onUploadReturnMission}
+              >
+                <Home className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>发送返航航线</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                variant="destructive"
+                onClick={() => { void runAsyncAction(onUploadEmergencyMission); }}
+                disabled={actionDisabled || !onUploadEmergencyMission}
+              >
+                <Shield className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>发送迫降航线</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                variant="outline"
+                onClick={handleReturnAndLand}
+                disabled={actionDisabled}
+              >
+                <PlaneLanding className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>返航并降落</TooltipContent>
+          </Tooltip>
+          {!missionReady && (
+            <div className="text-[11px] text-amber-500 bg-amber-500/10 rounded px-3 py-1 flex items-center gap-1">
+              <AlertTriangle className="h-3.5 w-3.5" /> 请先配置航线、HomePos 与迫降点
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="text-[11px] text-slate-500 space-y-1">
+            <div>状态: <span className={hangarStatusMap[hangar?.status ?? 0]?.tone}>{hangarStatusMap[hangar?.status ?? 0]?.text}</span></div>
+            <div>充电 {hangar?.percentage ?? 0}% · 功率 {hangar?.power?.toFixed?.(1) ?? "0"} W</div>
+            <div>时长 {hangar?.duration?.toFixed?.(0) ?? "--"} s</div>
+            {hangar?.error && (
+              <div className="text-destructive flex items-center gap-1">
+                <AlertTriangle className="h-3.5 w-3.5" /> {hangar.error}
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="icon" variant="secondary" onClick={() => { void runAsyncAction(onOpenHangar); }} disabled={actionDisabled}>
+                  <Home className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>打开机库门</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="icon" variant="secondary" onClick={() => { void runAsyncAction(onCloseHangar); }} disabled={actionDisabled}>
+                  <Home className="h-4 w-4 rotate-180" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>关闭机库门</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="icon" variant="destructive" onClick={() => { void runAsyncAction(onArmOff); }} disabled={actionDisabled}>
+                  <PowerOff className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>ARM OFF</TooltipContent>
+            </Tooltip>
+          </div>
         </div>
       )}
 

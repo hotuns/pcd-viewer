@@ -138,7 +138,7 @@ class MissionLogicSimulator:
                 item.y = wp.y
                 item.z = wp.z
                 item.pass_type = idx <= self._last_completed_index
-                item.task_type = wp.task_type
+                item.task_type = str(wp.task_type) if wp.task_type is not None else "0"
                 item.info = wp.info or f"wp-{idx}"
                 msg.PosList.append(item)
         else:
@@ -298,7 +298,7 @@ class MissionLogicSimulator:
             feedback.y = wp.y
             feedback.z = wp.z
             feedback.pass_type = True
-            feedback.task_type = wp.task_type
+            feedback.task_type = str(wp.task_type) if wp.task_type is not None else "0"
             feedback.info = wp.info or f"wp-{idx}"
             self.waypoint_pub.publish(feedback)
             self.publish_status(STATUS_EXECUTING, completed=idx)

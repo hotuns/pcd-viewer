@@ -9,16 +9,17 @@ import {
   ArrowUp, 
   ArrowDown, 
   Trash2, 
-  Plus, 
   Save, 
   Download, 
   Upload,
   MapPin,
   Clock
 } from "lucide-react";
-import type { Mission } from "@/types/mission";
+import type { Mission, PlannedPoint } from "@/types/mission";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TASK_TYPE_OPTIONS, normalizeTaskType } from "@/lib/taskTypes";
 
-type Waypoint = { x: number; y: number; z: number; t?: number };
+type Waypoint = PlannedPoint;
 
 export default function TrajectoryEditor({
   mission,
@@ -28,19 +29,21 @@ export default function TrajectoryEditor({
   editable = true,
   selectedIndex,
   onSelectIndex,
+  lockAnchors = false,
 }: {
   mission: Mission;
   onSaveAction: (file: File, jsonText: string) => void;
   onPointsChangeAction?: (points: Waypoint[]) => void;
-  externalPoints?: Array<{ x: number; y: number; z: number }>;
+  externalPoints?: Waypoint[];
   editable?: boolean;
   selectedIndex?: number | null;
   onSelectIndex?: (index: number | null) => void;
+  lockAnchors?: boolean;
 }) {
   const [loading, setLoading] = useState(false);
   const [meta, setMeta] = useState<{ name?: string; coord?: string; note?: string }>({});
   const [points, setPoints] = useState<Waypoint[]>([]);
-  const [manualInput, setManualInput] = useState<{ x: string; y: string; z: string }>({ x: "", y: "", z: "" });
+  const [manualInput, setManualInput] = useState<{ x: string; y: string; z: string; w: string; task_type: string }>({ x: "", y: "", z: "", w: "", task_type: "0" });
   const hasTrajectory = !!mission.trajectory;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -55,7 +58,16 @@ export default function TrajectoryEditor({
         return Number.isFinite(n) ? n : 0;
       };
       const tRaw = obj["t"];
-      return { x: num(obj["x"]), y: num(obj["y"]), z: num(obj["z"]), t: tRaw == null ? undefined : num(tRaw) };
+      const str = (value: unknown) => (typeof value === "string" ? value : undefined);
+      return {
+        x: num(obj["x"]),
+        y: num(obj["y"]),
+        z: num(obj["z"]),
+        w: obj["w"] == null ? undefined : num(obj["w"]),
+        t: tRaw == null ? undefined : num(tRaw),
+        task_type: normalizeTaskType(obj["task_type"]),
+        info: str(obj["info"]),
+      };
     });
     return { meta: nextMeta, points: normalized };
   };
@@ -98,7 +110,18 @@ export default function TrajectoryEditor({
 
   const addPoint = () => {
     if (!isEditable) return;
-    const next = [...points, { x: 0, y: 0, z: 0, t: (points.at(-1)?.t ?? -1) + 1 }];
+    const insertIndex = lockAnchors ? Math.max(points.length - 1, 1) : points.length;
+    const reference = points[Math.max(insertIndex - 1, 0)];
+    const nextPoint: Waypoint = {
+      x: reference?.x ?? 0,
+      y: reference?.y ?? 0,
+      z: reference?.z ?? 0,
+      w: reference?.w ?? 0,
+      t: (reference?.t ?? -1) + 1,
+      task_type: reference?.task_type ?? 0,
+    };
+    const next = points.slice();
+    next.splice(insertIndex, 0, nextPoint);
     setPoints(next);
     onPointsChangeAction?.(next);
   };
@@ -107,17 +130,29 @@ export default function TrajectoryEditor({
     const x = Number(manualInput.x);
     const y = Number(manualInput.y);
     const z = Number(manualInput.z);
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    const w = Number(manualInput.w);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) || !Number.isFinite(w)) {
       alert("请输入有效的数字坐标");
       return;
     }
-    const next = [...points, { x, y, z, t: (points.at(-1)?.t ?? -1) + 1 }];
+    const taskTypeValue = normalizeTaskType(manualInput.task_type) ?? 0;
+    const insertIndex = lockAnchors ? Math.max(points.length - 1, 1) : points.length;
+    const next = points.slice();
+    next.splice(insertIndex, 0, {
+      x,
+      y,
+      z,
+      w,
+      t: (points.at(insertIndex - 1)?.t ?? points.at(-1)?.t ?? -1) + 1,
+      task_type: taskTypeValue,
+    });
     setPoints(next);
     onPointsChangeAction?.(next);
-    setManualInput({ x: "", y: "", z: "" });
+    setManualInput({ x: "", y: "", z: "", w: "", task_type: taskTypeValue.toString() });
   };
   const removePoint = (idx: number) => {
     if (!isEditable) return;
+    if (lockAnchors && (idx === 0 || idx === points.length - 1)) return;
     const next = points.filter((_, i) => i !== idx);
     setPoints(next);
     onPointsChangeAction?.(next);
@@ -126,6 +161,7 @@ export default function TrajectoryEditor({
     if (!isEditable) return;
     const j = idx + dir;
     if (j < 0 || j >= points.length) return;
+    if (lockAnchors && (idx === 0 || idx === points.length - 1 || j === 0 || j === points.length - 1)) return;
     const arr = points.slice();
     [arr[idx], arr[j]] = [arr[j], arr[idx]];
     setPoints(arr);
@@ -158,7 +194,15 @@ export default function TrajectoryEditor({
     if (!externalPoints) return;
     // 合并 z/t：z 直接来自外部，t 保留原有
     setPoints((prev) => {
-      const merged: Waypoint[] = externalPoints.map((p, i) => ({ x: p.x, y: p.y, z: p.z, t: prev[i]?.t }));
+      const merged: Waypoint[] = externalPoints.map((p, i) => ({
+        x: p.x,
+        y: p.y,
+        z: p.z,
+        w: p.w ?? prev[i]?.w,
+        t: p.t ?? prev[i]?.t,
+        task_type: p.task_type ?? prev[i]?.task_type ?? 0,
+        info: p.info ?? prev[i]?.info,
+      }));
       return merged;
     });
   }, [externalPoints]);
@@ -177,15 +221,11 @@ export default function TrajectoryEditor({
             </p>
           </div>
         </div>
-        <Button size="sm" onClick={addPoint} className="h-8 gap-1" disabled={!isEditable}>
-          <Plus className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">新增点</span>
-        </Button>
       </div>
 
       <div className="rounded-lg border border-dashed border-muted/60 p-3 text-xs space-y-2">
         <div className="text-xs font-semibold text-muted-foreground">手动输入航点</div>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="flex flex-wrap items-center gap-2 md:flex-nowrap">
           {(["x", "y", "z"] as const).map((axis) => (
             <Input
               key={axis}
@@ -194,19 +234,49 @@ export default function TrajectoryEditor({
               placeholder={axis.toUpperCase()}
               value={manualInput[axis]}
               onChange={(e) => setManualInput((prev) => ({ ...prev, [axis]: e.target.value }))}
-              className="h-7 text-xs bg-background"
+              className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100 flex-1 min-w-[80px]"
               disabled={!isEditable}
             />
           ))}
+          <Input
+            type="number"
+            inputMode="decimal"
+            placeholder="Yaw (rad)"
+            value={manualInput.w}
+            onChange={(e) => setManualInput((prev) => ({ ...prev, w: e.target.value }))}
+            className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100 flex-1 min-w-[100px]"
+            disabled={!isEditable}
+          />
+          <Select
+            value={manualInput.task_type}
+            onValueChange={(value) => setManualInput((prev) => ({ ...prev, task_type: value }))}
+            disabled={!isEditable}
+          >
+            <SelectTrigger className="h-7 text-xs w-full bg-slate-900 border-slate-700 text-slate-100 min-w-[150px]">
+              <SelectValue placeholder="任务类型" />
+            </SelectTrigger>
+            <SelectContent>
+              {TASK_TYPE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value.toString()}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            size="sm"
+            className="h-7 text-xs px-3 shrink-0"
+            onClick={addManualPoint}
+            disabled={!isEditable}
+          >
+            添加
+          </Button>
         </div>
-        <Button size="sm" className="w-full h-7 text-xs" onClick={addManualPoint} disabled={!isEditable}>
-          手动添加
-        </Button>
       </div>
 
       {!isEditable && (
-        <div className="text-[11px] text-amber-600 bg-amber-100/80 rounded-md px-3 py-2 border border-amber-200">
-          当前任务未进入“中”状态，点击「进入编辑」后即可编辑航线。
+        <div className="text-[11px] text-amber-400 bg-amber-500/10 rounded-md px-3 py-2 border border-amber-500/30">
+          当前任务处于非规划阶段，请在上方切换到“编辑/规划”后调整航线。
         </div>
       )}
 
@@ -214,7 +284,7 @@ export default function TrajectoryEditor({
         <div className="space-y-1">
           <Label className="text-xs text-muted-foreground">名称</Label>
           <Input 
-            className="h-7 text-xs bg-background" 
+            className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100" 
             value={meta.name ?? ""} 
             onChange={(e) => setMeta({ ...meta, name: e.target.value })} 
             placeholder="航线名称"
@@ -224,7 +294,7 @@ export default function TrajectoryEditor({
         <div className="space-y-1">
           <Label className="text-xs text-muted-foreground">坐标系</Label>
           <Input 
-            className="h-7 text-xs bg-background" 
+            className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100" 
             value={meta.coord ?? "local-xyz"} 
             onChange={(e) => setMeta({ ...meta, coord: e.target.value })} 
             placeholder="local-xyz"
@@ -234,7 +304,7 @@ export default function TrajectoryEditor({
         <div className="col-span-2 space-y-1">
           <Label className="text-xs text-muted-foreground">备注</Label>
           <Input 
-            className="h-7 text-xs bg-background" 
+            className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100" 
             value={meta.note ?? ""} 
             onChange={(e) => setMeta({ ...meta, note: e.target.value })} 
             placeholder="添加备注信息..."
@@ -243,10 +313,12 @@ export default function TrajectoryEditor({
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 border rounded-md bg-background flex flex-col">
-        <div className="grid grid-cols-[40px_1fr_100px] gap-2 p-2 text-xs font-medium text-muted-foreground border-b bg-muted/50"> 
+      <div className="flex-1 min-h-0 border border-slate-800 rounded-md bg-slate-900/50 flex flex-col">
+        <div className="grid grid-cols-[40px_minmax(0,1fr)_120px_150px_100px] gap-2 p-2 text-xs font-medium text-muted-foreground border-b bg-muted/50"> 
           <div className="text-center">#</div>
           <div>坐标 (X, Y, Z)</div>
+          <div className="text-center">偏航 (rad)</div>
+          <div className="text-center">任务类型</div>
           <div className="text-right pr-2">操作</div>
         </div>
         <ScrollArea className="flex-1">
@@ -254,7 +326,7 @@ export default function TrajectoryEditor({
             {points.map((p, i) => (
               <div
                 key={i}
-                className={`grid grid-cols-[40px_1fr_100px] gap-2 p-2 items-center transition-colors group cursor-pointer ${selectedIndex === i ? "bg-primary/10 border border-primary/30 rounded-md" : "hover:bg-muted/30"}`}
+                className={`grid grid-cols-[40px_minmax(0,1fr)_120px_150px_100px] gap-2 p-2 items-center transition-colors group cursor-pointer ${selectedIndex === i ? "bg-primary/10 border border-primary/30 rounded-md" : "hover:bg-muted/30"}`}
                 onClick={() => onSelectIndex?.(i)}
               >
                 <div className="text-xs text-muted-foreground text-center font-mono">{i + 1}</div>
@@ -268,6 +340,53 @@ export default function TrajectoryEditor({
                       <span>t={p.t}</span>
                     </div>
                   )}
+                  {lockAnchors && (i === 0 || i === points.length - 1) && (
+                    <div className="text-[10px] uppercase tracking-wide text-primary">已锁定 HomePos</div>
+                  )}
+                </div>
+                <div className="flex items-center">
+                    <Input
+                      className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100"
+                    type="number"
+                    inputMode="decimal"
+                    value={p.w ?? 0}
+                    onChange={(e) => {
+                      const value = Number(e.target.value);
+                      setPoints((prev) => {
+                        const next = prev.map((pt, idx) => (idx === i ? { ...pt, w: Number.isFinite(value) ? value : pt.w } : pt));
+                        onPointsChangeAction?.(next);
+                        return next;
+                      });
+                    }}
+                    disabled={!isEditable || (lockAnchors && (i === 0 || i === points.length - 1))}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </div>
+                <div className="flex items-center">
+                  <Select
+                    value={(p.task_type ?? 0).toString()}
+                    onValueChange={(value) => {
+                      const parsed = normalizeTaskType(value) ?? 0;
+                      setPoints((prev) => {
+                        const next = prev.map((pt, idx) => (idx === i ? { ...pt, task_type: parsed } : pt));
+                        onPointsChangeAction?.(next);
+                        return next;
+                      });
+                    }}
+                    disabled={!isEditable || (lockAnchors && (i === 0 || i === points.length - 1))}
+                  >
+                    <SelectTrigger className="h-7 text-xs w-full bg-slate-900 border-slate-700 text-slate-100" onPointerDown={(e) => e.stopPropagation()}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TASK_TYPE_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value.toString()}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="flex items-center justify-end gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
                   <Button 
@@ -275,7 +394,7 @@ export default function TrajectoryEditor({
                     variant="ghost" 
                     className="h-6 w-6" 
                     onClick={() => move(i, -1)} 
-                    disabled={i === 0 || !isEditable}
+                    disabled={i === 0 || !isEditable || (lockAnchors && (i === 0 || i === points.length - 1))}
                     title="上移"
                   >
                     <ArrowUp className="w-3 h-3" />
@@ -285,7 +404,7 @@ export default function TrajectoryEditor({
                     variant="ghost" 
                     className="h-6 w-6" 
                     onClick={() => move(i, 1)} 
-                    disabled={i === points.length - 1 || !isEditable}
+                    disabled={i === points.length - 1 || !isEditable || (lockAnchors && (i === points.length - 1 || i === 0))}
                     title="下移"
                   >
                     <ArrowDown className="w-3 h-3" />
@@ -295,7 +414,7 @@ export default function TrajectoryEditor({
                     variant="ghost" 
                     className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10" 
                     onClick={() => removePoint(i)}
-                    disabled={!isEditable}
+                    disabled={!isEditable || (lockAnchors && (i === 0 || i === points.length - 1))}
                     title="删除"
                   >
                     <Trash2 className="w-3 h-3" />
