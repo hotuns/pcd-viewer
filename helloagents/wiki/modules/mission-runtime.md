@@ -22,17 +22,17 @@ MissionController + MissionRuntimePanel + hooks 组成的运行编排层，负�
 **模块:** Mission Runtime Orchestrator  
 提供从“配置阶段”进入“规划阶段”的显式入口，避免任务停留在草稿/已配置状态。
 
-- UI: TaskConfigPanel/Homes 表单下方新增 `ArrowRight` 图标按钮（Tooltip 展示当前限制）。
-- 条件：`scene`、`trajectory`、HomePos、迫降点全部存在时按钮可点，调用 `handleMissionUpdate({...status: "planning"})`。
-- 失败场景提示：Tooltip 文案按优先级提示缺少的配置（场景、航线、HomePos、迫降点）。
+- UI: TaskConfigPanel 下方新增 `ArrowRight` 图标按钮（Tooltip 展示当前限制）。
+- 条件：`scene`、迫降点全部存在（航线可后续手动编辑）时按钮可点，调用 `handleMissionUpdate({...status: "planning"})`。
+- 失败场景提示：Tooltip 文案按优先级提示缺少的配置（场景、迫降点）。
 
-### 需求: 默认 HomePos / 迫降点
+### 需求: 默认迫降点
 **模块:** Mission Runtime Orchestrator  
-MissionController 载入任务时若缺少 HomePos 或迫降点，需自动写入 `(0,0,0)`、`yaw=0`、`frameId=map` 的默认值并立即持久化。
+MissionController 载入任务时若缺少迫降点，需自动写入 `(0,0,0)`、`yaw=0`、`frameId=map` 的默认值并立即持久化。
 
-- 逻辑：`useEffect` 检测 `selectedMission.home/emergency`，缺失则克隆 `DEFAULT_HOME` 写入 mission。
-- Side effect: 更新本地 `homePose/emergencyPose` state，确保 TrajectoryEditor Anchor 能立刻可用。
-- 目的：避免“配置阶段”卡在必填提示，让未配置任务也具备初始锚点，可直接调整后再覆盖真实坐标。
+- 逻辑：`useEffect` 检测 `selectedMission.emergency`，缺失则克隆默认姿态写入 mission。
+- Side effect: 更新本地 `emergencyPose` state，确保 TrajectoryEditor / MissionList 上传均包含迫降点。
+- 目的：避免“配置阶段”卡在必填提示，让未配置任务也具备初始紧急降落点，可直接调整后再覆盖真实坐标。
 
 #### 场景: ROS 连接
 - `useRosConnection` 默认地址 `ws://192.168.203.30:9999`，同时持久化到 localStorage。
@@ -70,16 +70,20 @@ PCDCanvas/TrajectoryEditor 需要共享航线点。
 - `PlannedPoint`: 航线编辑器使用的点结构（x/y/z/t/task_type/info）
 - `MissionHomePosition`：frameId + position + yaw（rad）。
 - `MissionRuntimeEvent`：`{id,timestamp,level,message,details?}`，在 UI 中以时间倒序显示。
+- `DronePosition`：沿用 ROS 机体系（x前/y左/z上）坐标，渲染层通过 `DroneModel` 的固定校正四元数将 GLTF 朝向旋转到 +X 轴，UI 中展示的数值与 Missionlogic 报文保持一致。
 
 ## 新增运行控制
-- 任务控制面板提供“上传返航航线”“上传迫降航线”按钮：分别使用 HomePos（task_type=0）与迫降点（task_type=5）生成单点 MissionList 并立即执行。
+- 任务控制面板提供“上传返航航线”按钮：使用 HomePos（task_type=0）生成单点 MissionList 并立即执行。
+- 迫降按钮直接通过 `/mission/task_opt` STOP + `/mission/control` LAND 触发紧急降落，无需上传航线；常规 MissionList 上传会自动追加迫降点。
 - 面板顶部新增 Tab，可在“任务控制 / 机库控制”间切换。机库面板集中展示充电百分比、功率、时长以及门控、ARM OFF 操作。
+- 订阅 `nest_msgs`（`/nest/status`,`/nest/battery`,`/nest/motor_status`,`/nest/auto_mode`,`/nest/uav_on`）并在机库 Tab 中展示温湿度、SOC、电机报警、无人机在巢状态等细节。
+- 低电压判据：`battery.voltage <= 21V` 自动触发 RETURN_HOME，恢复至 ≥22V 解除；若缺失电压数据退回原 25% SOC 逻辑。
 
 ## 依赖
 - Hooks: `useMissionDatabase`, `useRosConnection`, `useMissionRuntime`
 - UI 子组件: `TaskInfo`, `TaskConfigPanel`, `MissionRuntimePanel`, `MissionHomeForm`, `TrajectoryEditor`
 - 3D: `PCDCanvas`, `PCDCanvasHandle`（视角控制）
-- ROSLIB 话题/服务：MissionCommand、MissionList、MissionStatus、Control、TaskOpt、HangarChargeStatus、BatteryState、Pose、WaypointFeedback、PointCloud
+- ROSLIB 话题/服务：MissionCommand、MissionList、MissionStatus、Control、TaskOpt、HangarChargeStatus、BatteryState、NestStatus、NestBattery、NestMotorStatus、NestAutoMode、UavOn、Pose、WaypointFeedback、PointCloud
 
 ## 变更历史
 - 2025-12-24 首次记录模块职责，标记 ROS 操作流程。*** End Patch***

@@ -11,14 +11,13 @@ import type { Source, DronePosition, Waypoint, PlannedPoint } from "@/types/miss
 import { DroneModel } from "./DroneModel";
 import { CameraFollower } from "./CameraFollower";
 import { VoxelizedPointCloud } from "./VoxelizedPointCloud";
+import { AxisLabels, RosAxes } from "./AxisLabels";
 
 export type PCDCanvasHandle = {
   fitToView: () => void;
   zoomToCenter: () => void;
   orientToPlane: (plane: 'xy'|'xz'|'yz') => void;
 };
-
-THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
 export type PCDCanvasProps = {
   source?: Source | null;
@@ -358,6 +357,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         setGeom(null);
         setMesh(null);
         setBbox(null);
+        resetRef.current?.();
         return;
       }
       
@@ -420,6 +420,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           const pos = geometry.getAttribute("position");
           const count = pos?.count ?? 0;
           onLoadedRef.current?.({ bbox: clone, count });
+          setTimeout(() => fitRef.current?.(), 0);
           
           console.log(`Loaded PLY mesh: ${count} vertices`);
         } else {
@@ -450,14 +451,13 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           const pos = geometry.getAttribute("position");
           const count = pos?.count ?? 0;
           onLoadedRef.current?.({ bbox: clone, count });
+          setTimeout(() => fitRef.current?.(), 0);
           
           console.log(`Loaded PCD point cloud: ${count} points`);
         }
-        
-        // auto fit
-        setTimeout(() => fitRef.current?.(), 0);
       } catch (e) {
         console.error(`Failed to load ${fileExtension.toUpperCase()} file:`, e);
+        resetRef.current?.();
       } finally {
         onLoadingChangeRef.current?.(false);
       }
@@ -619,12 +619,17 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
             fadeDistance={60}
             fadeStrength={1}
             infiniteGrid
-            rotation={[-Math.PI / 2, 0, 0]}
+            rotation={[0, 0, 0]}
             cellColor="#2a2a2a"
             sectionColor="#3a3a3a"
           />
         )}
-        {showAxes && <axesHelper args={[50]} />}
+        {showAxes && (
+          <group>
+            <RosAxes length={3} />
+            <AxisLabels length={3} labelOffset={0.2} mode="ros" />
+          </group>
+        )}
         
         {/* 场景渲染：根据模式选择渲染方式 */}
         {showSceneCloud && renderMode === 'points' && geom && !voxelized && (

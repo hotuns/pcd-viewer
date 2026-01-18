@@ -74,44 +74,34 @@ export function TaskConfigPanel({ selectedMission, onMissionUpdate }: TaskConfig
   };
 
   return (
-    <div className="space-y-8">
-      <div className="flex items-center justify-between">
-        <Label className="text-xs text-muted-foreground">场景点云 (.pcd/.ply)</Label>
-        {selectedMission.scene && <CheckCircle2 className="w-4 h-4 text-green-500" />}
-      </div>
-
-      {!selectedMission.scene ? (
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            onClick={() => sceneFileRef.current?.click()}
-            className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border border-dashed border-border hover:border-primary/50 hover:bg-primary/5 transition-all group"
-          >
-            <div className="p-2 rounded-full bg-muted group-hover:bg-background transition-colors">
-              <Upload className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
-            </div>
-            <span className="text-xs text-muted-foreground group-hover:text-foreground">上传文件</span>
-          </button>
-          <button
-            onClick={() => {
-              const url = prompt("输入场景URL (.pcd/.ply):");
-              if (url) updateSceneUrl(url);
-            }}
-            className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border border-dashed border-border hover:border-primary/50 hover:bg-primary/5 transition-all group"
-          >
-            <div className="p-2 rounded-full bg-muted group-hover:bg-background transition-colors">
-              <LinkIcon className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
-            </div>
-            <span className="text-xs text-muted-foreground group-hover:text-foreground">输入 URL</span>
-          </button>
+    <div className="space-y-4 text-xs">
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs text-muted-foreground">场景点云 (.pcd/.ply)</Label>
+          {selectedMission.scene && <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />}
         </div>
-      ) : (
-        <div className="relative group overflow-hidden rounded-xl border border-border bg-muted/30 p-3 transition-all hover:border-primary/30">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/10 text-primary">
-              <Map className="h-4 w-4" />
-            </div>
+        {!selectedMission.scene ? (
+          <div className="flex gap-2">
+            <Button size="sm" className="flex-1 h-7 text-xs gap-1" variant="outline" onClick={() => sceneFileRef.current?.click()}>
+              <Upload className="h-3.5 w-3.5" /> 上传
+            </Button>
+            <Button
+              size="sm"
+              className="flex-1 h-7 text-xs gap-1"
+              variant="ghost"
+              onClick={() => {
+                const url = prompt("输入场景URL (.pcd/.ply):");
+                if (url) updateSceneUrl(url);
+              }}
+            >
+              <LinkIcon className="h-3.5 w-3.5" /> URL
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 rounded border border-border bg-muted/40 px-2 py-1">
+            <Map className="h-4 w-4 text-primary" />
             <div className="flex-1 min-w-0">
-              <div className="text-xs font-medium truncate">
+              <div className="text-[11px] font-medium truncate">
                 {selectedMission.scene.type === "file" ? selectedMission.scene.file.name : selectedMission.scene.url.split("/").pop()}
               </div>
               <div className="text-[10px] text-muted-foreground">
@@ -120,12 +110,12 @@ export function TaskConfigPanel({ selectedMission, onMissionUpdate }: TaskConfig
                   : "远程资源"}
               </div>
             </div>
-            <Button size="icon" variant="ghost" onClick={clearScene} className="h-8 w-8 text-muted-foreground hover:text-destructive">
+            <Button size="icon" variant="ghost" onClick={clearScene} className="h-7 w-7 text-muted-foreground hover:text-destructive">
               <X className="h-4 w-4" />
             </Button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       <input
         ref={sceneFileRef}
@@ -138,43 +128,33 @@ export function TaskConfigPanel({ selectedMission, onMissionUpdate }: TaskConfig
         }}
       />
 
-      <div className="flex items-center justify-between">
-        <Label className="text-xs text-muted-foreground">航线文件 (.json)</Label>
-        {selectedMission.trajectory && <CheckCircle2 className="w-4 h-4 text-green-500" />}
-      </div>
-
-      {!selectedMission.trajectory ? (
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            onClick={() => trajectoryFileRef.current?.click()}
-            className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border border-dashed border-border hover:border-primary/50 hover:bg-primary/5 transition-all group"
-          >
-            <div className="p-2 rounded-full bg-muted group-hover:bg-background transition-colors">
-              <Upload className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
-            </div>
-            <span className="text-xs text-muted-foreground group-hover:text-foreground">上传文件</span>
-          </button>
-          <button
-            onClick={() => {
-              const url = prompt("输入航线 URL (.json):");
-              if (url) updateTrajectoryUrl(url);
-            }}
-            className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border border-dashed border-border hover:border-primary/50 hover:bg-primary/5 transition-all group"
-          >
-            <div className="p-2 rounded-full bg-muted group-hover:bg-background transition-colors">
-              <LinkIcon className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
-            </div>
-            <span className="text-xs text-muted-foreground group-hover:text-foreground">输入 URL</span>
-          </button>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs text-muted-foreground">航线文件 (.json)（可选）</Label>
+          {selectedMission.trajectory && <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />}
         </div>
-      ) : (
-        <div className="relative group overflow-hidden rounded-xl border border-border bg-muted/30 p-3 transition-all hover:border-primary/30">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/10 text-primary">
-              <Route className="h-4 w-4" />
-            </div>
+        {!selectedMission.trajectory ? (
+          <div className="flex gap-2">
+            <Button size="sm" className="flex-1 h-7 text-xs gap-1" variant="outline" onClick={() => trajectoryFileRef.current?.click()}>
+              <Upload className="h-3.5 w-3.5" /> 上传
+            </Button>
+            <Button
+              size="sm"
+              className="flex-1 h-7 text-xs gap-1"
+              variant="ghost"
+              onClick={() => {
+                const url = prompt("输入航线 URL (.json):");
+                if (url) updateTrajectoryUrl(url);
+              }}
+            >
+              <LinkIcon className="h-3.5 w-3.5" /> URL
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 rounded border border-border bg-muted/40 px-2 py-1">
+            <Route className="h-4 w-4 text-primary" />
             <div className="flex-1 min-w-0">
-              <div className="text-xs font-medium truncate">
+              <div className="text-[11px] font-medium truncate">
                 {selectedMission.trajectory.type === "file"
                   ? selectedMission.trajectory.file.name
                   : selectedMission.trajectory.url.split("/").pop()}
@@ -185,12 +165,12 @@ export function TaskConfigPanel({ selectedMission, onMissionUpdate }: TaskConfig
                   : "远程资源"}
               </div>
             </div>
-            <Button size="icon" variant="ghost" onClick={clearTrajectory} className="h-8 w-8 text-muted-foreground hover:text-destructive">
+            <Button size="icon" variant="ghost" onClick={clearTrajectory} className="h-7 w-7 text-muted-foreground hover:text-destructive">
               <X className="h-4 w-4" />
             </Button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       <input
         ref={trajectoryFileRef}

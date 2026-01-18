@@ -34,12 +34,14 @@
 - [架构设计](arch.md)
 - [API 手册](api.md)
 - [数据模型](data.md)
+- [ROS 消息对照](ros-msgs.md)
 - [变更历史](../history/index.md)
 
 ## 4. 运行特性更新
 
 - TrajectoryEditor + PCDCanvas 支持在航线规划阶段为每个航点配置 `task_type`，并在 JSON 导入/导出与 MissionList 上传过程中保持同步，保障不同任务动作（起降、前视/侧视拍摄、RFID）不会丢失。
-- 规划阶段强制填写 HomePos 与迫降点，航线首尾自动锁定到 HomePos，支持编辑 yaw(w) 以及可调的航线宽度/航点大小。
-- 若任务缺少 HomePos/迫降点，MissionController 会自动写入 `(0,0,0)` 与 `yaw=0` 的默认坐标，避免初次配置时出现空值。
+- 规划阶段仅要求填写迫降点；上传航线时会自动将该点追加到 `PosList` 尾部，仍可编辑 yaw(w) 并调节航线宽度/航点大小。
+- 若任务缺少迫降点，MissionController 会自动写入 `(0,0,0)` 与 `yaw=0` 的默认值，避免初次配置时出现空值。
 - MissionRuntimePanel 增加“返航航线”“迫降航线”快捷按钮并提供机库控制 Tab，集中展示充电/门控信息。
-- MissionController 的配置阶段新增“进入规划”图标按钮：仅当场景点云、航线 JSON、HomePos、迫降点全部配置完成时才可点击，以使命状态切换为 `planning` 并展开航点编辑。
+- MissionController 的配置阶段新增“进入规划”图标按钮：仅当场景点云、航线 JSON、迫降点全部配置完成时才可点击，以使命状态切换为 `planning` 并展开航点编辑。
+- 机库控制页已接入 `nest_msgs` 系列话题（温湿度/电池/电机/无人机在巢状态），并将低电压自动返航阈值固定为 **21V**。

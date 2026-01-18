@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 
@@ -9,7 +10,14 @@ interface DroneModelProps {
 }
 
 export function DroneModel({ position, orientation }: DroneModelProps) {
-  const { scene } = useGLTF('/drone/scene.gltf');
+  const { scene } = useGLTF('/drone.glb');
+  const finalQuaternion = useMemo(() => {
+    if (orientation) {
+      const rosQuaternion = new THREE.Quaternion(orientation.x, orientation.y, orientation.z, orientation.w);
+      return rosQuaternion;
+    }
+    return new THREE.Quaternion();
+  }, [orientation]);
   
   // 克隆场景并确保材质正确
   const clonedScene = scene.clone();
@@ -47,12 +55,7 @@ export function DroneModel({ position, orientation }: DroneModelProps) {
   return (
     <group 
       position={position}
-      quaternion={orientation ? [
-        orientation.x,
-        orientation.y,
-        orientation.z,
-        orientation.w
-      ] : undefined}
+      quaternion={finalQuaternion}
       scale={[0.2, 0.2, 0.2]}
       rotation={[0, 0, 0]}
     >
@@ -62,4 +65,4 @@ export function DroneModel({ position, orientation }: DroneModelProps) {
 }
 
 // 预加载GLTF模型
-useGLTF.preload('/drone/scene.gltf');
+useGLTF.preload('/drone.glb');

@@ -5,7 +5,7 @@ import { Mission, MissionStatus } from "@/types/mission";
 import { useMissionDatabase } from "@/hooks/useMissionDatabase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { PlusCircle, Trash2, Play, FileText, Map, Clock, CheckCircle2, RefreshCw, BarChart, ArrowRight } from "lucide-react";
 
@@ -23,19 +23,17 @@ const getStatusText = (status: MissionStatus): string => {
   return statusMap[status];
 };
 
-const getStatusColor = (status: MissionStatus): string => {
-  const colorMap = {
-    draft: "secondary",
-    configured: "secondary",
-    planning: "outline",
-    ready: "default",
-    running: "destructive",
-    paused: "secondary",
-    completed: "default",
-    failed: "destructive",
-  };
-  return colorMap[status];
+const statusColorMap: Record<MissionStatus, BadgeProps["variant"]> = {
+  draft: "secondary",
+  configured: "secondary",
+  planning: "outline",
+  ready: "default",
+  running: "destructive",
+  paused: "secondary",
+  completed: "default",
+  failed: "destructive",
 };
+const getStatusColor = (status: MissionStatus): BadgeProps["variant"] => statusColorMap[status];
 
 const getStatusIcon = (status: MissionStatus) => {
   const iconMap = {

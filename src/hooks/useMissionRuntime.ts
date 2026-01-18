@@ -12,8 +12,10 @@ import type {
   PlannedPoint,
   TaskType,
 } from "@/types/mission";
+import type { NestAutoModeTelemetry, NestBatteryTelemetry, NestMotorTelemetry, NestStatusTelemetry, NestTelemetry, NestUavPresenceTelemetry } from "@/types/nest";
 import { normalizeTaskType, serializeTaskType } from "@/lib/taskTypes";
 import { createGridMapDataFromPointCloud2 } from "@/lib/pointCloudParser";
+import { convertBodyOrientationToViewer, convertBodyPositionToViewer } from "@/lib/frameTransforms";
 // @ts-expect-error - roslib 没有类型声明
 import ROSLIB from "roslib";
 
@@ -28,6 +30,11 @@ const DEFAULT_ENDPOINTS = {
   batteryTopic: "/battery/status",
   poseTopic: "/odom_visualization/pose",
   pointCloudTopic: "/grid_map/occupancy_inflate",
+  nestStatusTopic: "/nest/status",
+  nestBatteryTopic: "/nest/battery",
+  nestMotorStatusTopic: "/nest/motor_status",
+  nestAutoModeTopic: "/nest/auto_mode",
+  nestUavOnTopic: "/nest/uav_on",
 };
 
 const CONTROL_CMDS = {
@@ -36,13 +43,17 @@ const CONTROL_CMDS = {
   EXECUTE: 3,
   RETURN_HOME: 4,
   ARM_OFF: 5,
+  EMERGENCY_LAND: 6,
 };
 
 const TASK_OPT_CMDS = {
   START: 1,
   PAUSE: 2,
   STOP: 3,
+  EMERGENCY: 4,
 };
+
+const EMERGENCY_WAYPOINT_INFO = "__emergency_waypoint__";
 
 type Endpoints = typeof DEFAULT_ENDPOINTS;
 
@@ -57,6 +68,7 @@ type UseMissionRuntimeParams = {
     droneId?: number;
     endpoints?: Partial<Endpoints>;
     lowBatteryThreshold?: number;
+    lowBatteryVoltageThreshold?: number;
   };
 };
 
@@ -126,6 +138,8 @@ export function useMissionRuntime({
   const origin = home?.position ?? null;
   const [phase, setPhase] = useState<MissionPhase>("idle");
   const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
+  const completedHistoryRef = useRef(0);
+  const currentCompletedRef = useRef(0);
   const [hangar, setHangar] = useState<HangarChargeTelemetry | null>(null);
   const [battery, setBattery] = useState<BatteryTelemetry | null>(null);
   const [events, setEvents] = useState<MissionRuntimeEvent[]>([]);
@@ -137,6 +151,12 @@ export function useMissionRuntime({
   const [pendingWaypoints, setPendingWaypoints] = useState<PlannedPoint[]>([]);
   const pendingWaypointsRef = useRef<PlannedPoint[]>([]);
   const [pointCloudStack, setPointCloudStack] = useState<Float32Array[]>([]);
+  const [rosDebugLogs, setRosDebugLogs] = useState<Array<{ id: string; timestamp: Date; label: string; payload: string }>>([]);
+  const [nestStatus, setNestStatus] = useState<NestStatusTelemetry | null>(null);
+  const [nestBattery, setNestBattery] = useState<NestBatteryTelemetry | null>(null);
+  const [nestMotorStatus, setNestMotorStatus] = useState<NestMotorTelemetry | null>(null);
+  const [nestAutoMode, setNestAutoMode] = useState<NestAutoModeTelemetry | null>(null);
+  const [nestUavPresence, setNestUavPresence] = useState<NestUavPresenceTelemetry | null>(null);
 
   const missionCommandService = useRef<typeof ROSLIB.Service | null>(null);
   const missionListTopic = useRef<typeof ROSLIB.Topic | null>(null);
@@ -148,18 +168,53 @@ export function useMissionRuntime({
   const poseTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const waypointTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const pointCloudTopicRef = useRef<typeof ROSLIB.Topic | null>(null);
+  const nestStatusTopic = useRef<typeof ROSLIB.Topic | null>(null);
+  const nestBatteryTopic = useRef<typeof ROSLIB.Topic | null>(null);
+  const nestMotorStatusTopic = useRef<typeof ROSLIB.Topic | null>(null);
+  const nestAutoModeTopic = useRef<typeof ROSLIB.Topic | null>(null);
+  const nestUavOnTopic = useRef<typeof ROSLIB.Topic | null>(null);
 
   const pushEvent = useCallback((level: MissionRuntimeEvent["level"], message: string, details?: Record<string, unknown>) => {
     setEvents((prev) => [makeEvent(level, message, details), ...prev].slice(0, 40));
   }, []);
 
+  useEffect(() => {
+    completedHistoryRef.current = 0;
+    currentCompletedRef.current = 0;
+    pendingWaypointsRef.current = [];
+    setPendingWaypoints([]);
+    setProgress(null);
+    setLastWaypoint(null);
+    setEvents([]);
+  }, [mission?.id]);
+
   const resetRosBindings = useCallback(() => {
     missionCommandService.current = null;
-    [missionListTopic, controlTopic, taskOptTopic, missionStatusTopic, hangarTopic, batteryTopic, poseTopic, waypointTopic, pointCloudTopicRef].forEach((ref) => {
+    [
+      missionListTopic,
+      controlTopic,
+      taskOptTopic,
+      missionStatusTopic,
+      hangarTopic,
+      batteryTopic,
+      poseTopic,
+      waypointTopic,
+      pointCloudTopicRef,
+      nestStatusTopic,
+      nestBatteryTopic,
+      nestMotorStatusTopic,
+      nestAutoModeTopic,
+      nestUavOnTopic,
+    ].forEach((ref) => {
       ref.current?.unsubscribe?.();
       ref.current = null;
     });
     setPointCloudStack([]);
+    setNestStatus(null);
+    setNestBattery(null);
+    setNestMotorStatus(null);
+    setNestAutoMode(null);
+    setNestUavPresence(null);
   }, []);
 
   useEffect(() => {
@@ -207,21 +262,25 @@ export function useMissionRuntime({
     }) => {
       const nextPhase = mapStatusToPhase(msg.status);
       setPhase(nextPhase);
-      if (Array.isArray(msg.PosList) && msg.PosList.length > 0) {
-        const completed = msg.PosList.filter((p) => !!p.pass_type).length;
+      const filteredList = Array.isArray(msg.PosList)
+        ? msg.PosList.filter((p) => (p.info ?? "") !== EMERGENCY_WAYPOINT_INFO)
+        : [];
+      if (filteredList.length > 0) {
+        const completed = filteredList.filter((p) => !!p.pass_type).length;
+        currentCompletedRef.current = completed;
         setProgress({
-          completed,
-          total: msg.PosList.length,
+          completed: completedHistoryRef.current + completed,
+          total: completedHistoryRef.current + filteredList.length,
         });
         let lastCompletedIndex = -1;
-        msg.PosList.forEach((p, i) => {
+        filteredList.forEach((p, i) => {
           if (p.pass_type) lastCompletedIndex = i;
         });
         if (lastCompletedIndex >= 0) {
-          const wp = msg.PosList[lastCompletedIndex];
+          const wp = filteredList[lastCompletedIndex];
           setLastWaypoint({ index: lastCompletedIndex, info: wp.info, position: { x: wp.x, y: wp.y, z: wp.z } });
         }
-        const remaining = msg.PosList.filter((p) => !p.pass_type).map((p) => ({
+        const remaining = filteredList.filter((p) => !p.pass_type).map((p) => ({
           x: p.x,
           y: p.y,
           z: p.z,
@@ -233,6 +292,12 @@ export function useMissionRuntime({
       } else {
         setPendingWaypoints([]);
         pendingWaypointsRef.current = [];
+        if (completedHistoryRef.current > 0) {
+          setProgress({
+            completed: completedHistoryRef.current,
+            total: completedHistoryRef.current,
+          });
+        }
       }
       pushEvent("info", `任务状态更新为 ${nextPhase}`);
     });
@@ -300,18 +365,20 @@ export function useMissionRuntime({
     }) => {
       const poseData = msg.pose?.pose;
       if (!poseData) return;
-      const localPosition = origin
+      const originShifted = origin
         ? {
             x: poseData.position.x - origin.x,
             y: poseData.position.y - origin.y,
             z: poseData.position.z - origin.z,
           }
         : poseData.position;
+      const viewerPosition = convertBodyPositionToViewer(originShifted);
+      const viewerOrientation = convertBodyOrientationToViewer(poseData.orientation);
       setDronePosition({
-        x: localPosition.x,
-        y: localPosition.y,
-        z: localPosition.z,
-        orientation: poseData.orientation,
+        x: viewerPosition.x,
+        y: viewerPosition.y,
+        z: viewerPosition.z,
+        orientation: viewerOrientation ?? undefined,
       });
     });
 
@@ -357,15 +424,103 @@ export function useMissionRuntime({
         console.warn("Failed to parse point cloud", error);
       }
     });
+    nestStatusTopic.current = new ROSLIB.Topic({
+      ros,
+      name: endpoints.nestStatusTopic,
+      messageType: "nest_msgs/NestStatus",
+    });
+    nestStatusTopic.current.subscribe((msg: { inter_temp?: number; inter_huminity?: number; Opt_mode?: string }) => {
+      setNestStatus({
+        temperature: typeof msg.inter_temp === "number" ? msg.inter_temp : null,
+        humidity: typeof msg.inter_huminity === "number" ? msg.inter_huminity : null,
+        optMode: typeof msg.Opt_mode === "string" ? msg.Opt_mode : null,
+      });
+    });
+
+    nestBatteryTopic.current = new ROSLIB.Topic({
+      ros,
+      name: endpoints.nestBatteryTopic,
+      messageType: "nest_msgs/NestBattery",
+    });
+    nestBatteryTopic.current.subscribe((msg: Record<string, unknown>) => {
+      setNestBattery({
+        soc: typeof msg.battery_soc === "number" ? msg.battery_soc : null,
+        chargingVoltage: typeof msg.charging_volt === "number" ? msg.charging_volt : null,
+        chargingCurrent: typeof msg.charging_current === "number" ? msg.charging_current : null,
+        batteryTemp1: typeof msg.battery_temp1 === "number" ? msg.battery_temp1 : null,
+        batteryTemp2: typeof msg.battery_temp2 === "number" ? msg.battery_temp2 : null,
+        pcbTemp1: typeof msg.pcb_temp1 === "number" ? msg.pcb_temp1 : null,
+        highestCellVolt: typeof msg.highest_cell_volt === "number" ? msg.highest_cell_volt : null,
+        maxCellCount: typeof msg.max_cell_no === "number" ? msg.max_cell_no : null,
+        cellVoltages: Array.isArray(msg.cell_volt) ? msg.cell_volt.map((value) => Number(value)).filter((value) => Number.isFinite(value)) : [],
+        batteryChargedState: typeof msg.battery_charged === "string" ? msg.battery_charged : null,
+        highestCellNo: typeof msg.highest_cell_no === "string" ? msg.highest_cell_no : null,
+        lowestCellNo: typeof msg.lowest_cell_no === "string" ? msg.lowest_cell_no : null,
+        batterySupplyState: typeof msg.battery_supply === "string" ? msg.battery_supply : null,
+        batteryBalanceState: typeof msg.battery_balance === "string" ? msg.battery_balance : null,
+        chargingOk: typeof msg.charging_OK === "string" ? msg.charging_OK : null,
+      });
+    });
+
+    nestMotorStatusTopic.current = new ROSLIB.Topic({
+      ros,
+      name: endpoints.nestMotorStatusTopic,
+      messageType: "nest_msgs/NestMotorStatus",
+    });
+    nestMotorStatusTopic.current.subscribe((msg: Record<string, unknown>) => {
+      setNestMotorStatus({
+        xMotorAlarm: typeof msg.XMotor === "string" ? msg.XMotor : null,
+        yMotorAlarm: typeof msg.YMotor === "string" ? msg.YMotor : null,
+        xAxisStatus: typeof msg.XAxisStatus === "string" ? msg.XAxisStatus : null,
+        yAxisStatus: typeof (msg as Record<string, unknown>)["Y AxisStatus"] === "string" ? (msg as Record<string, unknown>)["Y AxisStatus"] as string : null,
+      });
+    });
+
+    nestAutoModeTopic.current = new ROSLIB.Topic({
+      ros,
+      name: endpoints.nestAutoModeTopic,
+      messageType: "nest_msgs/NestAutoMode",
+    });
+    nestAutoModeTopic.current.subscribe((msg: { Auto_mode?: string }) => {
+      setNestAutoMode({ mode: typeof msg.Auto_mode === "string" ? msg.Auto_mode : null });
+    });
+
+    nestUavOnTopic.current = new ROSLIB.Topic({
+      ros,
+      name: endpoints.nestUavOnTopic,
+      messageType: "nest_msgs/UavOn",
+    });
+    nestUavOnTopic.current.subscribe((msg: { isUAVOn?: string }) => {
+      setNestUavPresence({ state: typeof msg.isUAVOn === "string" ? msg.isUAVOn : null });
+    });
 
     return () => {
       resetRosBindings();
     };
   }, [rosConnected, rosRef, endpoints, pushEvent, resetRosBindings, origin]);
 
+  const appendDebugLog = useCallback((label: string, payload: unknown) => {
+    const entry = {
+      id: `${label}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      timestamp: new Date(),
+      label,
+      payload: (() => {
+        try { return JSON.stringify(payload); } catch { return String(payload); }
+      })(),
+    };
+    setRosDebugLogs((prev) => [entry, ...prev].slice(0, 50));
+    try {
+      console.info(`[ROS][${label}]`, payload);
+    } catch {
+      // ignore console issues
+    }
+  }, []);
+  const clearDebugLogs = useCallback(() => setRosDebugLogs([]), []);
+
   const callMissionCommand = useCallback(async (command: number) => {
     if (!missionCommandService.current) throw new Error("MissionCommand 服务未就绪");
     setBusyAction("mission-command");
+    appendDebugLog("MissionCommand.request", { command });
     return new Promise<void>((resolve, reject) => {
       missionCommandService.current!.callService(
         new ROSLIB.ServiceRequest({ command }),
@@ -382,21 +537,23 @@ export function useMissionRuntime({
         }
       );
     });
-  }, [pushEvent]);
+  }, [appendDebugLog, pushEvent]);
 
   const publishControl = useCallback(async (cmd: number) => {
     if (!controlTopic.current) throw new Error("控制话题未连接");
     setBusyAction(`control-${cmd}`);
     try {
-      controlTopic.current!.publish(new ROSLIB.Message({
+      const msg = new ROSLIB.Message({
         cmd,
         drone_id: options?.droneId ?? 1,
-      }));
+      });
+      appendDebugLog("Control.publish", msg);
+      controlTopic.current!.publish(msg);
       pushEvent("info", `发送控制指令 ${cmd}`);
     } finally {
       setBusyAction(null);
     }
-  }, [options?.droneId, pushEvent]);
+  }, [appendDebugLog, options?.droneId, pushEvent]);
 
   const clampInt32 = (value: number) => {
     if (!Number.isFinite(value)) return 0;
@@ -412,30 +569,38 @@ export function useMissionRuntime({
     setBusyAction(`taskopt-${opt}`);
     try {
       const parsedId = clampInt32(Number.parseInt(mission.id, 10));
-      taskOptTopic.current.publish(
-        new ROSLIB.Message({
-          opt,
-          id: parsedId,
-        })
-      );
+      const message = new ROSLIB.Message({
+        opt,
+        id: parsedId,
+      });
+      appendDebugLog("TaskOpt.publish", message);
+      taskOptTopic.current.publish(message);
       pushEvent("info", label, { opt, mission: mission.id });
     } finally {
       setBusyAction(null);
     }
-  }, [mission, pushEvent]);
+  }, [appendDebugLog, mission, pushEvent]);
 
-  const sendMissionList = useCallback(async (pointsToUpload: PlannedPoint[], label: string) => {
+  const sendMissionList = useCallback(async (pointsToUpload: PlannedPoint[], label: string, options?: { resetProgress?: boolean }) => {
     if (!missionListTopic.current) throw new Error("MissionList 话题未连接");
     if (!mission) throw new Error("请先选择任务");
     if (!home) throw new Error("请先设置 HomePos");
     if (!pointsToUpload || pointsToUpload.length === 0) throw new Error("缺少航线");
+
+    if (options?.resetProgress) {
+      completedHistoryRef.current = 0;
+      currentCompletedRef.current = 0;
+    } else {
+      completedHistoryRef.current += currentCompletedRef.current;
+      currentCompletedRef.current = 0;
+    }
 
     setBusyAction(label);
     const now = Date.now();
     const secs = Math.floor(now / 1000);
     const nsecs = Math.floor((now % 1000) * 1e6);
     const parsedId = Number.parseInt(mission.id, 10);
-    const normalized = pointsToUpload.map((p, index) => ({
+    const normalizedBase = pointsToUpload.map((p, index) => ({
       x: p.x,
       y: p.y,
       z: p.z,
@@ -443,6 +608,15 @@ export function useMissionRuntime({
       task_type: normalizeTaskType(p.task_type) ?? 0,
       info: p.info ?? `wp-${index}`,
     }));
+    const emergencyNormalized = emergency ? {
+      x: emergency.position.x,
+      y: emergency.position.y,
+      z: emergency.position.z,
+      w: emergency.yaw,
+      task_type: 0,
+      info: EMERGENCY_WAYPOINT_INFO,
+    } : null;
+    const rosWaypoints = emergencyNormalized ? [...normalizedBase, emergencyNormalized] : normalizedBase;
     try {
       const message = new ROSLIB.Message({
         id: clampInt32(Number.isFinite(parsedId) ? parsedId : 0),
@@ -453,65 +627,49 @@ export function useMissionRuntime({
             orientation: yawToQuaternion(home.yaw),
           },
         },
-        PosNum: normalized.length,
-        PosList: normalized.map((p) => ({
+        PosNum: rosWaypoints.length,
+        PosList: rosWaypoints.map((p) => ({
           x: p.x,
           y: p.y,
           z: p.z,
           pass_type: false,
-          task_type: serializeTaskType(p.task_type),
+          task_type: serializeTaskType(p.task_type as TaskType | undefined),
           info: p.info,
         })),
       });
+      appendDebugLog("MissionList.publish", message);
       missionListTopic.current.publish(message);
-      setPendingWaypoints(normalized);
-      pendingWaypointsRef.current = normalized;
+      setPendingWaypoints(normalizedBase);
+      pendingWaypointsRef.current = normalizedBase;
       setPhase("mission_upload");
-      pushEvent("info", `${label}`, { waypoints: normalized.length });
+      pushEvent("info", `${label}`, { waypoints: normalizedBase.length, emergencyAppended: emergencyNormalized != null });
     } finally {
       setBusyAction(null);
     }
-  }, [missionListTopic, mission, home, pushEvent]);
+  }, [appendDebugLog, missionListTopic, mission, home, emergency, pushEvent]);
 
   const uploadMission = useCallback(async () => {
     if (!plannedPoints || plannedPoints.length === 0) throw new Error("缺少航线");
-    await sendMissionList(plannedPoints, "任务列表已上传");
+    await sendMissionList(plannedPoints, "任务列表已上传", { resetProgress: true });
   }, [plannedPoints, sendMissionList]);
 
-  const uploadSinglePointMission = useCallback(async (pose: MissionHomePosition, taskType: TaskType, label: string) => {
-    const singlePoint: PlannedPoint = {
-      x: pose.position.x,
-      y: pose.position.y,
-      z: pose.position.z,
-      w: pose.yaw,
-      task_type: taskType,
-      info: label,
-    };
-    await sendMissionList([singlePoint], label);
-    await publishTaskOpt(TASK_OPT_CMDS.START, `${label}-TaskOpt`);
-    await publishControl(CONTROL_CMDS.EXECUTE);
-  }, [publishControl, publishTaskOpt, sendMissionList]);
 
   const resumeMission = useCallback(async () => {
     const remaining = pendingWaypointsRef.current;
     if (!remaining || remaining.length === 0) {
       throw new Error("没有待执行的航点");
     }
-    await sendMissionList(remaining, "续航任务已上传");
+    await sendMissionList(remaining, "续航任务已上传", { resetProgress: false });
     pushEvent("info", "自动开始剩余航点");
     await publishTaskOpt(TASK_OPT_CMDS.START, "TaskOpt 启动剩余任务");
     await publishControl(CONTROL_CMDS.EXECUTE);
   }, [publishControl, publishTaskOpt, sendMissionList, pushEvent]);
 
-  const uploadReturnMission = useCallback(async () => {
-    if (!home) throw new Error("请先设置 HomePos");
-    await uploadSinglePointMission(home, 0, "返航航线");
-  }, [home, uploadSinglePointMission]);
-
   const uploadEmergencyMission = useCallback(async () => {
-    if (!emergency) throw new Error("请先设置迫降点");
-    await uploadSinglePointMission(emergency, 5, "迫降航线");
-  }, [emergency, uploadSinglePointMission]);
+    pushEvent("warning", "执行迫降指令");
+    await publishTaskOpt(TASK_OPT_CMDS.EMERGENCY, "TaskOpt 迫降");
+    await publishControl(CONTROL_CMDS.EMERGENCY_LAND);
+  }, [publishControl, publishTaskOpt, pushEvent]);
 
   const handleTakeoff = useCallback(() => publishControl(CONTROL_CMDS.TAKEOFF), [publishControl]);
   const handleExecute = useCallback(async () => {
@@ -528,7 +686,24 @@ export function useMissionRuntime({
   const handleCloseHangar = useCallback(() => callMissionCommand(2), [callMissionCommand]);
 
   useEffect(() => {
-    if (!battery || battery.percentage == null) return;
+    if (!battery) return;
+    const voltage = typeof battery.voltage === "number" ? battery.voltage : null;
+    const voltageThreshold = options?.lowBatteryVoltageThreshold ?? 21;
+    const voltageRelease = voltageThreshold + 1;
+    if (voltage != null) {
+      if (voltage <= voltageThreshold && !autoReturnTriggered) {
+        setAutoReturnTriggered(true);
+        pushEvent("warning", `电压低（${voltage.toFixed(2)}V），触发返航`);
+        handleReturnHome().catch((error) => {
+          setRuntimeError(error instanceof Error ? error.message : String(error));
+        });
+      }
+      if (voltage >= voltageRelease && autoReturnTriggered) {
+        setAutoReturnTriggered(false);
+      }
+      return;
+    }
+    if (battery.percentage == null) return;
     const threshold = options?.lowBatteryThreshold ?? 25;
     if (battery.percentage <= threshold && !autoReturnTriggered) {
       setAutoReturnTriggered(true);
@@ -540,11 +715,21 @@ export function useMissionRuntime({
     if (battery.percentage > threshold + 10 && autoReturnTriggered) {
       setAutoReturnTriggered(false);
     }
-  }, [battery, options?.lowBatteryThreshold, autoReturnTriggered, handleReturnHome, pushEvent]);
+  }, [battery, options?.lowBatteryThreshold, options?.lowBatteryVoltageThreshold, autoReturnTriggered, handleReturnHome, pushEvent]);
 
   const resumeAvailable = useMemo(() => {
-    return phase === "hangar_ready" && (hangar?.status === 2) && pendingWaypoints.length > 0;
+    const inHangarReady = phase === "hangar_ready" || phase === "mission_upload";
+    const hangarReady = (hangar?.status === 2) || hangar?.status == null;
+    return inHangarReady && hangarReady && pendingWaypoints.length > 0;
   }, [phase, hangar?.status, pendingWaypoints.length]);
+
+  const nestTelemetry: NestTelemetry = useMemo(() => ({
+    status: nestStatus,
+    battery: nestBattery,
+    motor: nestMotorStatus,
+    autoMode: nestAutoMode,
+    uavPresence: nestUavPresence,
+  }), [nestStatus, nestBattery, nestMotorStatus, nestAutoMode, nestUavPresence]);
 
   return {
     phase,
@@ -559,11 +744,13 @@ export function useMissionRuntime({
     pendingCount: pendingWaypoints.length,
     canResume: resumeAvailable,
     pointClouds: pointCloudStack,
+    debugLogs: rosDebugLogs,
+    clearDebugLogs,
+    nest: nestTelemetry,
     actions: {
       openHangar: handleOpenHangar,
       closeHangar: handleCloseHangar,
       uploadMission,
-      uploadReturnMission,
       uploadEmergencyMission,
       executeMission: handleExecute,
       takeoff: handleTakeoff,

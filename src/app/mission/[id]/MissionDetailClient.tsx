@@ -53,7 +53,7 @@ export default function MissionDetailClient({ missionId }: MissionDetailClientPr
 
   if (loading) {
     return (
-      <div className="min-h-screen w-full flex items-center justify-center text-sm text-muted-foreground">
+      <div className="h-screen w-full flex items-center justify-center text-sm text-muted-foreground">
         正在加载任务 {missionId} ...
       </div>
     );
@@ -61,7 +61,7 @@ export default function MissionDetailClient({ missionId }: MissionDetailClientPr
 
   if (error || !mission) {
     return (
-      <div className="min-h-screen w-full flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+      <div className="h-screen w-full flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
         <div>无法加载任务：{error || "任务不存在"}</div>
         <button
           onClick={handleBack}
@@ -74,7 +74,7 @@ export default function MissionDetailClient({ missionId }: MissionDetailClientPr
   }
 
   return (
-    <div className="min-h-screen w-full">
+    <div className="h-screen w-full overflow-hidden">
       <MissionController initialMission={mission} onBack={handleBack} />
     </div>
   );

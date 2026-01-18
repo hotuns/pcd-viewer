@@ -7,7 +7,7 @@
 - 任务配置
 	- 上传/链接点云场景（.pcd/.ply），即时加载到 3D 视图
 	- 使用全新的 `TrajectoryEditor` 编辑 MissionList 轨迹，支持 JSON 文件往返
-	- 在 `HomePos` 表单中维护机库/返航点 (PoseStamped)
+	- 在迫降点表单中维护紧急降落位姿（`MissionHomeForm`）
 - Missionlogic 运行面板
 	- 通过 `MissionCommand` 服务控制机库开关
 	- 一键上传 MissionList、发送 TAKEOFF/LAND/EXECUTE/RETURN_HOME/ARM_OFF 控制 (`mission_msgs/Control`)
@@ -23,9 +23,9 @@
 
 - ✅ 将 Missionlogic.md 中的状态机流程映射到前端运行面板：包含机库开/关、任务上传、起飞/执行/返航/降落/停桨等指令按钮，以及电量低自动返航逻辑。
 - ✅ 新增 `useMissionRuntime` Hook，统一连接 `mission_msgs` 中的 MissionCommand/MissionList/MissionStatus/HangarChargeStatus/BatteryState 等 ROS 接口，实时展示航点进度与机库充电状态。
-- ✅ 左侧界面重构：TaskInfo 显示 Mission 状态 + Runtime 阶段，MissionRuntimePanel 负责 Missionlogic 操作，MissionHomeForm + TrajectoryEditor 用于配置 HomePos 与航线。
+- ✅ 左侧界面重构：TaskInfo 显示 Mission 状态 + Runtime 阶段，MissionRuntimePanel 负责 Missionlogic 操作，MissionHomeForm (迫降点) + TrajectoryEditor 用于配置航线。
 - ✅ `mission_msgs` 增补 HangarChargeStatus.msg，CMakeLists 已包含，可直接在 ROS 工作空间编译。
-- ⚠️ 数据持久化层暂未存储 HomePos、运行事件等扩展字段，刷新页面会丢失这些信息；后续需扩展 `/api/missions` 与 SQLite 表结构。
+- ⚠️ 数据持久化层暂未存储运行事件等扩展字段，刷新页面会丢失这些信息；后续需扩展 `/api/missions` 与 SQLite 表结构。
 
 ### 运行
 

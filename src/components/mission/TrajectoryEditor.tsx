@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { 
   ArrowUp, 
   ArrowDown, 
@@ -208,7 +207,7 @@ export default function TrajectoryEditor({
   }, [externalPoints]);
 
   return (
-    <div className="space-y-4 h-full flex flex-col">
+    <div className="space-y-4 p-2 h-full flex flex-col">
       <div className="flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
           <div className="p-2 bg-primary/10 rounded-lg">
@@ -313,7 +312,7 @@ export default function TrajectoryEditor({
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 border border-slate-800 rounded-md bg-slate-900/50 flex flex-col">
+      <div className="flex-1 border border-slate-800 rounded-md bg-slate-900/50 flex flex-col min-h-[200px]">
         <div className="grid grid-cols-[40px_minmax(0,1fr)_120px_150px_100px] gap-2 p-2 text-xs font-medium text-muted-foreground border-b bg-muted/50"> 
           <div className="text-center">#</div>
           <div>坐标 (X, Y, Z)</div>
@@ -321,7 +320,7 @@ export default function TrajectoryEditor({
           <div className="text-center">任务类型</div>
           <div className="text-right pr-2">操作</div>
         </div>
-        <ScrollArea className="flex-1">
+        <div className="flex-1 overflow-y-auto">
           <div className="divide-y divide-border/50">
             {points.map((p, i) => (
               <div
@@ -432,7 +431,7 @@ export default function TrajectoryEditor({
               </div>
             )}
           </div>
-        </ScrollArea>
+        </div>
       </div>
 
       <div className="flex gap-2 pt-2 shrink-0">

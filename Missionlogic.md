@@ -33,13 +33,13 @@ flowchart LR
 - 降落 — 返回并着陆到机库或指定降落点。
 
 ## 规划约束（前端已实现）
-- 规划阶段必须先配置 HomePos 以及迫降点，UI 已强制校验。
-- 航线首尾自动锁定为 HomePos，用户新增/删除航点仅作用在中间段。
+- 仅要求配置迫降点（HomePos 默认为 `(0,0,0)`，可选）。
+- 上传航线时会自动在末尾追加迫降点，确保任务完成后仍有一条紧急降落路径。
 - 每个航点包含 `(x, y, z, w)`，其中 `w` 为偏航角（弧度）。
 - `task_type` 使用数字枚举：`0=无动作`、`1=前视`、`2=左视`、`3=右视`、`4=RFID`、`5=迫降`。上传 MissionList 时仍放在字符串字段里，但数值来自该枚举。
 - 规划面板提供航线宽度/航点大小调节，并实时作用于 3D 视图。
 
-飞行过程中，当电池电压低于XXV后，地面软件发送更新的回家任务，回家点是任务列表里面的HomePos，然后发送任务执行命令，飞机会执行新的回家任务，回到HomePos点，回到后会发送回到该点状态，可执行land指令，无人机降落到平台上后，发送armoff停机，开始充电，充电完成后，机库发送充电完成消息，地面站可发送打开机库，检测机库ready状态，完成后重新发送后续的轨迹点组成任务进行执行。
+飞行过程中，当电池电压低于 **21V** 时，地面软件会自动触发返航逻辑：通过 `/mission/task_opt` 发布 STOP 指令并向 `/mission/control` 发送 RETURN_HOME，返场后执行 LAND 与 ARM OFF。机库进入充电状态，待充电完成（HangarStatus=ready）后可以重新上传剩余航点继续任务。
 
 
 # 任务消息
@@ -109,13 +109,14 @@ px4ctrl（浙大开源控制器）起飞逻辑：
 
 
 3. 任务上传
-上传消息MissionList：
+上传消息 MissionList：
 ```
 int32 id                     #任务id 0/1（RF_id/二维码）
 geometry_msgs/PoseStamped HomePos  #起飞与返回点
 int32 PosNum                 #航点数量
 WaypointPosition[] PosList         #航点列表
 ```
+> 注意：前端在发送 MissionList 前会自动把“迫降点”追加到 `PosList` 尾部。
 
 
 4. 回传任务点
@@ -145,8 +146,7 @@ px4ctrl（浙大开源控制器）降落逻辑：
 
 5. 电池电量信息
 
-## 运行控制扩展（地面站）
-- **返航航线按钮**：上传仅含 HomePos 的 MissionList，并立即执行。用于主动召回。
-- **迫降航线按钮**：上传仅含“迫降点”的 MissionList，并将 `task_type` 置为 5。用于紧急降落。
-- 两个按钮都会先上传任务、再发布 TaskOpt START + 控制 EXECUTE，以保证飞行控制器按照新的任务执行。
+- **返航航线按钮**：保持之前逻辑，上传仅含 HomePos 的 MissionList 并执行，确保可主动召回。
+- **迫降按钮**：不再发送单点航线，直接通过 `/mission/task_opt` STOP 后调用 `/mission/control` LAND，立即在当前位置实施迫降。
+- 返航按钮仍会上传任务并发布 TaskOpt START + 控制 EXECUTE；迫降按钮仅发送 STOP + LAND 指令组。
 - Mission UI 新增“机库控制” Tab，提供机库门开关、充电状态（百分比/功率/时长）以及 ARM OFF。

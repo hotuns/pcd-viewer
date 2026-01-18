@@ -28,16 +28,21 @@ from mission_msgs.msg import (
     TaskOpt,
 )
 
+EMERGENCY_WAYPOINT_INFO = "__emergency_waypoint__"
+
 
 CMD_TAKEOFF = 1
 CMD_LAND = 2
 CMD_EXECUTE = 3
 CMD_RETURN_HOME = 4
 CMD_ARM_OFF = 5
+CMD_EMERGENCY_LAND = 6
 
 TASK_OPT_START = 1
 TASK_OPT_PAUSE = 2
 TASK_OPT_STOP = 3
+TASK_OPT_EMERGENCY = 4
+TASK_OPT_EMERGENCY = 4
 
 STATUS_HANGAR_READY = 0
 STATUS_MISSION_UPLOAD = 1
@@ -69,6 +74,8 @@ class MissionLogicSimulator:
         self._mission_thread: Optional[threading.Thread] = None
         self._running = False
         self._stop_requested = False
+        self._paused = False
+        self._resume_index = 0
         self._battery_percentage = 100.0
         self._home_pose = None
         self._mission_id = 0
@@ -86,6 +93,14 @@ class MissionLogicSimulator:
     # ---------------------- ROS 消息处理 ----------------------
     def on_mission_list(self, msg: MissionList) -> None:
         with self._lock:
+            filtered = []
+            for wp in msg.PosList:
+                if wp.info == EMERGENCY_WAYPOINT_INFO:
+                    rospy.loginfo("忽略迫降航点，不纳入航线进度")
+                    continue
+                filtered.append(wp)
+            msg.PosList = filtered
+            msg.PosNum = len(filtered)
             self._current_mission = msg
             self._home_pose = msg.HomePos
             self._mission_id = msg.id
@@ -113,10 +128,17 @@ class MissionLogicSimulator:
     def on_task_opt(self, msg: TaskOpt) -> None:
         rospy.loginfo("收到 TaskOpt: opt=%d id=%d", msg.opt, msg.id)
         if msg.opt == TASK_OPT_START:
-            self.start_mission()
+            self.start_mission(resume=True)
         elif msg.opt == TASK_OPT_PAUSE:
-            rospy.loginfo("模拟器未实现暂停，忽略 opt=2")
+            self.pause_mission()
         elif msg.opt == TASK_OPT_STOP:
+            rospy.loginfo("收到停止任务指令，触发返航流程")
+            with self._lock:
+                self._stop_requested = True
+                self._paused = False
+            self.request_return_home()
+        elif msg.opt == TASK_OPT_EMERGENCY:
+            rospy.loginfo("收到紧急迫降指令，立即降落")
             self.finish_mission(land_only=True)
         else:
             rospy.logwarn("未知的 TaskOpt opt=%d", msg.opt)
@@ -211,7 +233,7 @@ class MissionLogicSimulator:
         self.cloud_pub.publish(msg)
 
     # ---------------------- 任务执行逻辑 ----------------------
-    def start_mission(self) -> None:
+    def start_mission(self, resume: bool = False) -> None:
         with self._lock:
             if self._running:
                 rospy.logwarn("任务已在执行中，忽略重复指令")
@@ -219,9 +241,14 @@ class MissionLogicSimulator:
             if not self._current_mission or not self._current_mission.PosList:
                 rospy.logwarn("尚未收到 MissionList，无法开始执行")
                 return
+            if resume and self._resume_index > 0:
+                rospy.loginfo("继续执行任务（从航点 #%d）", self._resume_index)
+            else:
+                self._resume_index = 0
+                self._trajectory_points = []
             self._running = True
             self._stop_requested = False
-            self._trajectory_points = []
+            self._paused = False
             self._mission_thread = threading.Thread(target=self._mission_worker, daemon=True)
             self._mission_thread.start()
             rospy.loginfo("开始执行任务，共 %d 个航点", len(self._current_mission.PosList))
@@ -239,6 +266,7 @@ class MissionLogicSimulator:
             if not self._running and not land_only:
                 return
             self._running = False
+            self._paused = False
         if land_only:
             self.publish_status(STATUS_LANDING)
             time.sleep(1.0)
@@ -270,12 +298,21 @@ class MissionLogicSimulator:
 
         current_position = self._home_pose.pose.position if self._home_pose else self._current_mission.PosList[0]
 
+        start_index = self._resume_index if self._resume_index < len(self._current_mission.PosList) else 0
+
         for idx, wp in enumerate(self._current_mission.PosList):
+            if idx < start_index:
+                continue
             if rospy.is_shutdown():
                 break
             if self._stop_requested:
-                rospy.loginfo("任务被要求返航，跳出航点循环")
+                rospy.loginfo("任务被要求返航，跳出航点循环，下一次从航点 #%d 继续", idx)
+                self._resume_index = idx
                 break
+            if self._paused:
+                rospy.loginfo("任务已暂停，记录当前航点 #%d", idx)
+                self._resume_index = idx
+                return
             segment_distance = distance(current_position, wp)
             travel_time = max(1.5, segment_distance / max(0.5, self._cruise_speed))
             steps = max(5, int(travel_time / 0.3))
@@ -291,6 +328,10 @@ class MissionLogicSimulator:
                 self._battery_percentage = max(5.0, self._battery_percentage - segment_distance / steps * self._consumption_per_meter)
                 self.publish_battery()
                 time.sleep(travel_time / steps)
+            if self._stop_requested:
+                rospy.loginfo("任务返航中断于航点 #%d，未标记完成", idx)
+                self._resume_index = idx
+                break
             current_position = wp
             time.sleep(self._hover_time)
             feedback = WaypointPosition()
@@ -304,6 +345,8 @@ class MissionLogicSimulator:
             self.publish_status(STATUS_EXECUTING, completed=idx)
             time.sleep(1.0)
 
+        if not self._stop_requested:
+            self._resume_index = 0
         self.publish_status(STATUS_RETURN)
         if self._home_pose:
             home_pos = self._home_pose.pose.position
