@@ -4,11 +4,11 @@ type Vec3 = { x: number; y: number; z: number };
 type QuaternionLike = { x: number; y: number; z: number; w: number };
 
 // Three.js 默认 Y 轴朝上、Z 轴朝向观察者，ROS 机体系为 X(前)/Y(左)/Z(上)
-// 将 ROS 向量转换为 Three.js 视图：Xv = Xr, Yv = Zr, Zv = -Yr
+// 将 ROS 向量转换为 Three.js 视图：Xv = -Yr, Yv = Zr, Zv = Xr
 const BODY_TO_VIEWER_MATRIX = new THREE.Matrix4().set(
-  1,  0,  0, 0,
-  0,  0,  1, 0,
   0, -1,  0, 0,
+  0,  0,  1, 0,
+ -1,  0,  0, 0,
   0,  0,  0, 1
 );
 const VIEWER_TO_BODY_MATRIX = BODY_TO_VIEWER_MATRIX.clone().invert();

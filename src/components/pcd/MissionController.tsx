@@ -15,7 +15,7 @@ import { useMissionDatabase } from "@/hooks/useMissionDatabase";
 import { useRosConnection } from "@/hooks/useRosConnection";
 import { useMissionRuntime } from "@/hooks/useMissionRuntime";
 import type { Mission, MissionHomePosition, PlannedPoint, Waypoint } from "@/types/mission";
-import { PlugZap, SatelliteDish, Undo2, Crosshair, CheckCircle2, Edit3, FileCheck2, ArrowRight, ChevronsLeft, ChevronsRight, Bug, X } from "lucide-react";
+import { PlugZap, SatelliteDish, Undo2, CheckCircle2, Edit3, FileCheck2, ArrowRight, ChevronsLeft, ChevronsRight, Bug, X } from "lucide-react";
 import { normalizeTaskType } from "@/lib/taskTypes";
 import { convertBodyPositionToViewer, convertViewerPositionToBody } from "@/lib/frameTransforms";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -196,6 +196,11 @@ export default function MissionController({ initialMission, onBack }: MissionCon
     handleTrajectoryPointsChange(rosPoints);
   }, [handleTrajectoryPointsChange]);
 
+  const handleViewPreset = useCallback((plane: 'xy'|'xz'|'yz'|'iso') => {
+    canvasRef.current?.orientToPlane?.(plane);
+  }, []);
+
+
   const handleEditorResizeMove = useCallback((event: MouseEvent) => {
     if (!editorResizeRef.current) return;
     const delta = event.clientY - editorResizeRef.current.startY;
@@ -310,6 +315,7 @@ export default function MissionController({ initialMission, onBack }: MissionCon
   const missionPlanReady = useMemo(() => plannedPoints.length > 0 && !!selectedMission && hasMandatoryPoints, [plannedPoints.length, selectedMission, hasMandatoryPoints]);
 
   const currentMission = selectedMission;
+  const activeSceneSource = currentMission?.scene;
 
   type MissionStage = "setup" | "planning" | "runtime";
   const missionStage = useMemo<MissionStage>(() => {
@@ -567,7 +573,7 @@ export default function MissionController({ initialMission, onBack }: MissionCon
         <main className="flex-1 relative bg-slate-900 min-h-0">
           <PCDCanvas
             ref={canvasRef}
-            source={currentMission?.scene}
+            source={activeSceneSource}
             livePointClouds={missionRuntime.pointClouds ?? []}
             plannedPathPoints={viewerPlannedPoints}
             plannedPathVisible
@@ -585,14 +591,28 @@ export default function MissionController({ initialMission, onBack }: MissionCon
             showGrid
             showAxes
           />
-          <div className="absolute top-4 right-4 flex items-center gap-2 bg-slate-800/80 backdrop-blur rounded-full px-4 py-2 shadow">
+          <div className="absolute top-4 right-4 flex items-center gap-3 bg-slate-800/80 backdrop-blur rounded-full px-4 py-2 shadow">
             <label className="text-xs flex items-center gap-2 text-slate-200">
               <Switch checked={followDrone} onCheckedChange={setFollowDrone} />
               跟随
             </label>
-            <Button variant="outline" size="sm" onClick={() => canvasRef.current?.fitToView?.()} className="flex items-center gap-1">
-              <Crosshair className="h-3.5 w-3.5" /> 自适应
-            </Button>
+            <div className="flex items-center gap-1 text-[11px] text-slate-300">
+              <span>视角:</span>
+              <div className="flex items-center gap-1">
+                <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => handleViewPreset('xy')}>
+                  XY
+                </Button>
+                <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => handleViewPreset('xz')}>
+                  XZ
+                </Button>
+                <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => handleViewPreset('yz')}>
+                  YZ
+                </Button>
+                <Button variant="outline" size="sm" className="h-7 px-2" onClick={() => handleViewPreset('iso')}>
+                  45°
+                </Button>
+              </div>
+            </div>
             <Button variant="outline" size="sm" className="flex items-center gap-1 text-xs" onClick={() => setShowDetails((prev) => !prev)}>
               {showDetails ? "隐藏面板" : "显示面板"}
             </Button>

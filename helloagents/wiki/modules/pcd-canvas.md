@@ -8,6 +8,11 @@
 - **状态:** 🚧开发中
 - **最后更新:** 2025-12-24
 
+### 坐标轴约定
+- Three.js 仍使用默认右手坐标（红 X→右、绿 Y→上、蓝 Z→朝观察者）。
+- 通过 `AxisLabels(mode="ros")` 在轴标签中提示与 ROS ENU 机体系的对应关系：红轴=ROS -Y（右/左）、绿轴=ROS Z（上/下）、蓝轴=ROS -X（后/前）。
+- `RosAxes` 仅渲染 Three.js 默认方向的参考线；所有坐标变换继续由 `frameTransforms.ts` 负责。
+
 ## 规范
 
 ### 需求: 点云加载
@@ -17,6 +22,8 @@
 #### 场景: 静态场景
 - `source` 可为 URL/File；使用 PCDLoader/PLYLoader 完成加载，期间调用 `onLoadingChange(true/false)`。
 - 加载完成后触发 `onLoadedAction({bbox,count})`，计算 bounding box 供视图适配。
+- 读取 ROS 坐标后立即通过 `convertBodyPositionToViewer` 转换为 Three.js 视图坐标，确保与 `/tools/orientation` 一致；法线同步旋转。
+- Mission 页面额外提供“加载点云”按钮，可临时覆盖任务场景文件；再次点击“使用任务点云”即可恢复。
 
 #### 场景: 实时点云
 - `livePointClouds`（Float32Array[]）最新帧排在数组前端；最多保留若干帧并设置不同 opacity。
@@ -62,3 +69,4 @@ plannedPathPoints 在 3D 视图中表现为 Line + Sphere。
 
 ## 变更历史
 - 2025-12-24 创建模块文档，标注视图控制与编辑约束。
+- Mission 页面右上角提供 XY/XZ/YZ/45° 视角预设按钮（复用 `/tools/orientation` 逻辑），可快速切换顶视/侧视/等角视角。

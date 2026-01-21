@@ -632,6 +632,7 @@ export function useMissionRuntime({
           x: p.x,
           y: p.y,
           z: p.z,
+          w: p.w ?? 0,
           pass_type: false,
           task_type: serializeTaskType(p.task_type as TaskType | undefined),
           info: p.info,

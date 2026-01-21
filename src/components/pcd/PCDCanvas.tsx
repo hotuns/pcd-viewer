@@ -12,11 +12,45 @@ import { DroneModel } from "./DroneModel";
 import { CameraFollower } from "./CameraFollower";
 import { VoxelizedPointCloud } from "./VoxelizedPointCloud";
 import { AxisLabels, RosAxes } from "./AxisLabels";
+import { convertBodyPositionToViewer } from "@/lib/frameTransforms";
+
+const convertGeometryPositionsToViewer = (geometry: THREE.BufferGeometry) => {
+  const positionAttr = geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
+  if (positionAttr) {
+    for (let i = 0; i < positionAttr.count; i++) {
+      const converted = convertBodyPositionToViewer({
+        x: positionAttr.getX(i),
+        y: positionAttr.getY(i),
+        z: positionAttr.getZ(i),
+      });
+      positionAttr.setXYZ(i, converted.x, converted.y, converted.z);
+    }
+    positionAttr.needsUpdate = true;
+  }
+
+  const normalAttr = geometry.getAttribute("normal") as THREE.BufferAttribute | undefined;
+  if (normalAttr) {
+    for (let i = 0; i < normalAttr.count; i++) {
+      const converted = convertBodyPositionToViewer({
+        x: normalAttr.getX(i),
+        y: normalAttr.getY(i),
+        z: normalAttr.getZ(i),
+      });
+      const len = Math.hypot(converted.x, converted.y, converted.z) || 1;
+      normalAttr.setXYZ(i, converted.x / len, converted.y / len, converted.z / len);
+    }
+    normalAttr.needsUpdate = true;
+  }
+
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  return geometry;
+};
 
 export type PCDCanvasHandle = {
   fitToView: () => void;
   zoomToCenter: () => void;
-  orientToPlane: (plane: 'xy'|'xz'|'yz') => void;
+  orientToPlane: (plane: 'xy'|'xz'|'yz'|'iso') => void;
 };
 
 export type PCDCanvasProps = {
@@ -82,55 +116,28 @@ function SceneFitter({
 }
 
 function CameraOrienter({
-  bbox,
-  plannedPoints,
   controlsRef,
   registerOrient,
 }: {
-  bbox: THREE.Box3 | null;
-  plannedPoints?: PlannedPoint[];
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
-  registerOrient: (fn: (plane: 'xy'|'xz'|'yz') => void) => void;
+  registerOrient: (fn: (plane: 'xy'|'xz'|'yz'|'iso') => void) => void;
 }) {
   const { camera } = useThree();
   useEffect(() => {
-    const orient = (plane: 'xy'|'xz'|'yz') => {
+    const orient = (plane: 'xy'|'xz'|'yz'|'iso') => {
+      const center = new THREE.Vector3(0, 0, 0);
       const controls = controlsRef.current;
-      const target = controls ? controls.target.clone() : new THREE.Vector3(0,0,0);
-      // 优先使用航线点包围盒
-      let center = target.clone();
-      let size = new THREE.Vector3(1,1,1);
-      if (plannedPoints && plannedPoints.length > 0) {
-        const pb = new THREE.Box3();
-        for (const p of plannedPoints) {
-          pb.expandByPoint(new THREE.Vector3(p.x, p.y, p.z));
-        }
-        if (pb.isEmpty()) {
-          center = target.clone();
-          size.set(1,1,1);
-        } else {
-          center = pb.getCenter(new THREE.Vector3());
-          size = pb.getSize(new THREE.Vector3());
-        }
-      } else if (bbox) {
-        center = bbox.getCenter(new THREE.Vector3());
-        size = bbox.getSize(new THREE.Vector3());
-      }
-      const radius = Math.max(size.x, size.y, size.z) * 0.75 || 1;
-      const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
-      const dist = radius / Math.tan(fov / 2);
-      let normal = new THREE.Vector3(0,0,1); // XY -> +Z
-      if (plane === 'xz') normal = new THREE.Vector3(0,1,0); // look along +Y
-      if (plane === 'yz') normal = new THREE.Vector3(1,0,0); // look along +X
+      const distance = 6;
 
-      // Use Z-up for intuitive top/side views
-      camera.up.set(0,0,1);
-      const newPos = new THREE.Vector3();
-      newPos.copy(center);
-      newPos.addScaledVector(normal.normalize(), dist);
+      let normal = new THREE.Vector3(0, 0, 1);
+      if (plane === 'xz') normal = new THREE.Vector3(0, 1, 0);
+      if (plane === 'yz') normal = new THREE.Vector3(1, 0, 0);
+      if (plane === 'iso') normal = new THREE.Vector3(1, 1, 1);
+
+      camera.up.set(0, 1, 0);
+      const newPos = center.clone().add(normal.normalize().multiplyScalar(distance));
       camera.position.copy(newPos);
-      camera.near = Math.max(0.01, dist / 100);
-      camera.far = dist * 1000;
+      camera.lookAt(center);
       camera.updateProjectionMatrix();
       if (controls) {
         controls.target.copy(center);
@@ -138,7 +145,7 @@ function CameraOrienter({
       }
     };
     registerOrient(orient);
-  }, [bbox, plannedPoints, camera, controlsRef, registerOrient]);
+  }, [camera, controlsRef, registerOrient]);
   return null;
 }
 
@@ -183,7 +190,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const fitRef = useRef<(() => void) | null>(null);
   const resetRef = useRef<(() => void) | null>(null);
-  const orientRef = useRef<((plane: 'xy'|'xz'|'yz') => void) | null>(null);
+  const orientRef = useRef<((plane: 'xy'|'xz'|'yz'|'iso') => void) | null>(null);
   const [colorVersion, setColorVersion] = useState(0);
   const liveCloudGeometries = useMemo(() => {
     return livePointClouds.map((cloud, index) => {
@@ -341,13 +348,13 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
   const registerReset = (fn: () => void) => {
     resetRef.current = fn;
   };
-  const registerOrient = (fn: (plane: 'xy'|'xz'|'yz') => void) => {
+  const registerOrient = (fn: (plane: 'xy'|'xz'|'yz'|'iso') => void) => {
     orientRef.current = fn;
   };
   useImperativeHandle(ref, () => ({
     fitToView: () => fitRef.current?.(),
     zoomToCenter: () => resetRef.current?.(),
-    orientToPlane: (plane: 'xy'|'xz'|'yz') => orientRef.current?.(plane),
+    orientToPlane: (plane: 'xy'|'xz'|'yz'|'iso') => orientRef.current?.(plane),
   }), []);
 
   useEffect(() => {
@@ -387,8 +394,9 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           
           if (cancelled) return;
           
+          convertGeometryPositionsToViewer(geometry);
+
           // PLY 可能包含法线和颜色
-          geometry.computeBoundingBox();
           if (!geometry.attributes.normal) {
             geometry.computeVertexNormals();
           }
@@ -439,7 +447,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           if (cancelled) return;
           
           const geometry = points.geometry as THREE.BufferGeometry;
-          geometry.computeBoundingBox();
+          convertGeometryPositionsToViewer(geometry);
           setGeom(geometry);
           setMesh(null);
           setRenderMode('points');
@@ -783,6 +791,37 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
                 </mesh>
               );
             })}
+            {plannedPathPoints.map((p, i) => {
+              if (typeof p.w !== "number") return null;
+              const dirBody = { x: Math.cos(p.w), y: Math.sin(p.w), z: 0 };
+              const converted = convertBodyPositionToViewer(dirBody);
+              const dir = new THREE.Vector3(converted.x, converted.y, converted.z);
+              if (dir.lengthSq() < 1e-6) return null;
+              dir.normalize();
+              const length = Math.max(0.8, plannedPointSize * 12);
+              const coneLength = length * 0.25;
+              const shaftLength = length - coneLength;
+              const shaftEnd = dir.clone().multiplyScalar(shaftLength);
+              const tipEnd = dir.clone().multiplyScalar(length);
+              const shaftPoints: [number, number, number][] = [[0, 0, 0], [shaftEnd.x, shaftEnd.y, shaftEnd.z]];
+              const axis = new THREE.Vector3(0, 1, 0);
+              const arrowQuat = new THREE.Quaternion().setFromUnitVectors(axis, dir);
+              return (
+                <group key={`yaw-${i}`} position={[p.x, p.y, p.z]}>
+                  <Line
+                    points={shaftPoints}
+                    color="#f97316"
+                    lineWidth={Math.max(1, plannedPathLineWidth * 0.6)}
+                    transparent
+                    opacity={0.9}
+                  />
+                  <mesh position={[tipEnd.x, tipEnd.y, tipEnd.z]} quaternion={arrowQuat}>
+                    <coneGeometry args={[Math.max(0.05, plannedPointSize * 1.5), coneLength, 8]} />
+                    <meshStandardMaterial color="#f97316" emissive="#f97316" emissiveIntensity={0.4} />
+                  </mesh>
+                </group>
+              );
+            })}
           </group>
         )}
 
@@ -816,7 +855,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         <OrbitControls ref={controlsRef} makeDefault />
         <SceneFitter bbox={bbox} controlsRef={controlsRef} registerFit={registerFit} />
         <SceneResetter controlsRef={controlsRef} registerReset={registerReset} />
-        <CameraOrienter bbox={bbox} plannedPoints={plannedPathPoints} controlsRef={controlsRef} registerOrient={registerOrient} />
+        <CameraOrienter controlsRef={controlsRef} registerOrient={registerOrient} />
         <CameraFollower dronePosition={dronePosition ?? null} followDrone={followDrone} controlsRef={controlsRef} />
       </Canvas>
       {plannedPathEditable && selectedIdx == null && (

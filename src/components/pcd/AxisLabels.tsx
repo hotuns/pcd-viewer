@@ -3,7 +3,6 @@
 import { useMemo } from "react";
 import { Html, Line } from "@react-three/drei";
 import * as THREE from "three";
-import { convertBodyPositionToViewer } from "@/lib/frameTransforms";
 
 type AxisLabelsProps = {
   origin?: THREE.Vector3;
@@ -25,39 +24,54 @@ export function AxisLabels({
   labels,
 }: AxisLabelsProps) {
   const points = useMemo(() => {
-    const toViewerVec = (vec: { x: number; y: number; z: number }) => {
-      const converted = convertBodyPositionToViewer(vec);
-      return new THREE.Vector3(converted.x, converted.y, converted.z);
-    };
     const viewerVec = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+    const basePoints = [
+      {
+        key: "x" as const,
+        axis: labels?.x ?? "X",
+        color: "text-red-400",
+        description: "Three.js X 轴：右(+)/左(-)",
+        rosHint: "对应 ROS Y 轴（左为正）",
+        position: viewerVec(length, 0, 0),
+      },
+      {
+        key: "y" as const,
+        axis: labels?.y ?? "Y",
+        color: "text-green-400",
+        description: "Three.js Y 轴：上(+)/下(-)",
+        rosHint: "对应 ROS Z 轴（上为正）",
+        position: viewerVec(0, length, 0),
+      },
+      {
+        key: "z" as const,
+        axis: labels?.z ?? "Z",
+        color: "text-blue-400",
+        description: "Three.js Z 轴：朝前(+)/朝后(-)",
+        rosHint: "对应 ROS -X 轴（后为正）",
+        position: viewerVec(0, 0, length),
+      },
+    ];
 
     if (mode === "ros") {
-      return [
-        {
-          axis: labels?.x ?? "X (前)",
-          color: "text-red-400",
-          description: "ROS X 轴：前/后",
-          position: toViewerVec({ x: length, y: 0, z: 0 }),
-        },
-        {
-          axis: labels?.z ?? "Z (上)",
-          color: "text-green-400",
-          description: "ROS Z 轴：上/下",
-          position: toViewerVec({ x: 0, y: 0, z: length }),
-        },
-        {
-          axis: labels?.y ?? "Y (左)",
-          color: "text-blue-400",
-          description: "ROS Y 轴：左/右",
-          position: toViewerVec({ x: 0, y: length, z: 0 }),
-        },
-      ];
+      return basePoints.map((p) => ({
+        axis:
+          p.key === "x"
+            ? labels?.x ?? "ROS -Y (右)"
+            : p.key === "y"
+            ? labels?.y ?? "ROS Z (上)"
+            : labels?.z ?? "ROS -X (后)",
+        color: p.color,
+        description: `${p.description} · ${p.rosHint}`,
+        position: p.position,
+      }));
     }
-    return [
-      { axis: labels?.x ?? "X", color: "text-red-400", description: "Three.js X", position: viewerVec(length, 0, 0) },
-      { axis: labels?.y ?? "Y", color: "text-green-400", description: "Three.js Y", position: viewerVec(0, length, 0) },
-      { axis: labels?.z ?? "Z", color: "text-blue-400", description: "Three.js Z", position: viewerVec(0, 0, length) },
-    ];
+
+    return basePoints.map((p) => ({
+      axis: p.axis,
+      color: p.color,
+      description: p.description,
+      position: p.position,
+    }));
   }, [length, mode, labels]);
 
   return (
@@ -88,23 +102,20 @@ export function AxisLabels({
 }
 
 export function RosAxes({ length = 2 }: { length?: number }) {
-  const axes = useMemo(() => {
-    const toViewerVec = (vec: { x: number; y: number; z: number }) => {
-      const converted = convertBodyPositionToViewer(vec);
-      return new THREE.Vector3(converted.x, converted.y, converted.z);
-    };
-    return [
-      { color: '#ef4444', dir: toViewerVec({ x: 1, y: 0, z: 0 }) },
-      { color: '#60a5fa', dir: toViewerVec({ x: 0, y: 1, z: 0 }) },
-      { color: '#22c55e', dir: toViewerVec({ x: 0, y: 0, z: 1 }) },
-    ].map(axis => ({ ...axis, dir: axis.dir.normalize().multiplyScalar(length) }));
-  }, [length]);
+  const axes = useMemo(
+    () => [
+      { color: "#ef4444", dir: new THREE.Vector3(length, 0, 0) },
+      { color: "#22c55e", dir: new THREE.Vector3(0, length, 0) },
+      { color: "#60a5fa", dir: new THREE.Vector3(0, 0, length) },
+    ],
+    [length]
+  );
 
   return (
     <group>
       {axes.map((axis, idx) => (
         <Line
-          key={`ros-axis-${idx}`}
+          key={`viewer-axis-${idx}`}
           points={[[0, 0, 0], [axis.dir.x, axis.dir.y, axis.dir.z]]}
           color={axis.color}
           lineWidth={2}
