@@ -82,27 +82,36 @@ export type PCDCanvasProps = {
 
 function SceneFitter({
   bbox,
+  plannedPoints,
   controlsRef,
   registerFit,
 }: {
   bbox: THREE.Box3 | null;
+  plannedPoints?: PlannedPoint[];
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
   registerFit: (fn: () => void) => void;
 }) {
   const { camera } = useThree();
   useEffect(() => {
     const fit = () => {
-      if (!bbox) return;
-      const size = bbox.getSize(new THREE.Vector3());
-      const center = bbox.getCenter(new THREE.Vector3());
+      const bounds = new THREE.Box3();
+      if (plannedPoints && plannedPoints.length > 0) {
+        plannedPoints.forEach((p) => bounds.expandByPoint(new THREE.Vector3(p.x, p.y, p.z)));
+      } else if (bbox) {
+        bounds.copy(bbox);
+      } else {
+        bounds.setFromCenterAndSize(new THREE.Vector3(0, 0, 0), new THREE.Vector3(4, 4, 4));
+      }
+      const center = bounds.getCenter(new THREE.Vector3());
+      const size = bounds.getSize(new THREE.Vector3());
       const radius = Math.max(size.x, size.y, size.z) * 0.75 || 1;
       const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
-      const dist = radius / Math.tan(fov / 2);
-      camera.up.set(0, 0, 1);
-      const newPos = new THREE.Vector3(center.x + dist, center.y - dist, center.z + dist);
+      const distance = radius / Math.tan(fov / 2);
+      const direction = new THREE.Vector3(1, 1, 1).normalize();
+      camera.up.set(0, 1, 0);
+      const newPos = center.clone().add(direction.multiplyScalar(distance));
       camera.position.copy(newPos);
-      camera.near = Math.max(0.01, dist / 100);
-      camera.far = dist * 1000;
+      camera.lookAt(center);
       camera.updateProjectionMatrix();
       const controls = controlsRef.current;
       if (controls) {
@@ -111,7 +120,7 @@ function SceneFitter({
       }
     };
     registerFit(fit);
-  }, [bbox, camera, controlsRef, registerFit]);
+  }, [bbox, plannedPoints, camera, controlsRef, registerFit]);
   return null;
 }
 
@@ -853,7 +862,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         )}
 
         <OrbitControls ref={controlsRef} makeDefault />
-        <SceneFitter bbox={bbox} controlsRef={controlsRef} registerFit={registerFit} />
+        <SceneFitter bbox={bbox} plannedPoints={plannedPathPoints} controlsRef={controlsRef} registerFit={registerFit} />
         <SceneResetter controlsRef={controlsRef} registerReset={registerReset} />
         <CameraOrienter controlsRef={controlsRef} registerOrient={registerOrient} />
         <CameraFollower dronePosition={dronePosition ?? null} followDrone={followDrone} controlsRef={controlsRef} />

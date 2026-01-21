@@ -15,7 +15,7 @@ import { useMissionDatabase } from "@/hooks/useMissionDatabase";
 import { useRosConnection } from "@/hooks/useRosConnection";
 import { useMissionRuntime } from "@/hooks/useMissionRuntime";
 import type { Mission, MissionHomePosition, PlannedPoint, Waypoint } from "@/types/mission";
-import { PlugZap, SatelliteDish, Undo2, CheckCircle2, Edit3, FileCheck2, ArrowRight, ChevronsLeft, ChevronsRight, Bug, X } from "lucide-react";
+import { PlugZap, SatelliteDish, Undo2, CheckCircle2, Edit3, FileCheck2, ArrowRight, ChevronsLeft, ChevronsRight, Bug, X, Maximize2 } from "lucide-react";
 import { normalizeTaskType } from "@/lib/taskTypes";
 import { convertBodyPositionToViewer, convertViewerPositionToBody } from "@/lib/frameTransforms";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -613,6 +613,15 @@ export default function MissionController({ initialMission, onBack }: MissionCon
                 </Button>
               </div>
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2"
+              onClick={() => canvasRef.current?.fitToView?.()}
+              title="视图适配"
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+            </Button>
             <Button variant="outline" size="sm" className="flex items-center gap-1 text-xs" onClick={() => setShowDetails((prev) => !prev)}>
               {showDetails ? "隐藏面板" : "显示面板"}
             </Button>
