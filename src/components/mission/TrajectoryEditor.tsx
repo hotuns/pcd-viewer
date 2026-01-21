@@ -31,7 +31,7 @@ export default function TrajectoryEditor({
   lockAnchors = false,
 }: {
   mission: Mission;
-  onSaveAction: (file: File, jsonText: string) => void;
+  onSaveAction: (file: File, jsonText: string) => void | Promise<void>;
   onPointsChangeAction?: (points: Waypoint[]) => void;
   externalPoints?: Waypoint[];
   editable?: boolean;
@@ -43,6 +43,8 @@ export default function TrajectoryEditor({
   const [meta, setMeta] = useState<{ name?: string; coord?: string; note?: string }>({});
   const [points, setPoints] = useState<Waypoint[]>([]);
   const [manualInput, setManualInput] = useState<{ x: string; y: string; z: string; w: string; task_type: string }>({ x: "", y: "", z: "", w: "", task_type: "0" });
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const hasTrajectory = !!mission.trajectory;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -167,11 +169,20 @@ export default function TrajectoryEditor({
     onPointsChangeAction?.(arr);
   };
 
-  const save = () => {
-    if (!isEditable) return;
+  const save = async () => {
+    if (!isEditable || (!hasTrajectory && points.length === 0)) return;
+    setSaveStatus("saving");
     const json = JSON.stringify({ meta: { name: meta.name ?? mission.name, coord: meta.coord ?? "local-xyz", note: meta.note ?? "" }, points }, null, 2);
     const file = new File([json], `trajectory-${Date.now()}.json`, { type: "application/json" });
-    onSaveAction(file, json);
+    try {
+      await Promise.resolve(onSaveAction(file, json));
+      setSaveStatus("success");
+      setLastSavedAt(new Date());
+      setTimeout(() => setSaveStatus("idle"), 2000);
+    } catch (error) {
+      console.error("Failed to save trajectory", error);
+      setSaveStatus("error");
+    }
   };
 
   const handleImport = async (file: File) => {
@@ -218,6 +229,50 @@ export default function TrajectoryEditor({
             <p className="text-xs text-muted-foreground mt-1">
               {loading ? "加载中..." : `${points.length} 个航点`}
             </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1 text-slate-400">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => isEditable && fileInputRef.current?.click()}
+              disabled={!isEditable}
+              title="导入 JSON"
+            >
+              <Upload className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => {
+                const json = JSON.stringify({ meta: { name: meta.name ?? mission.name, coord: meta.coord ?? "local-xyz", note: meta.note ?? "" }, points }, null, 2);
+                const blob = new Blob([json], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `${mission.name}-trajectory.json`;
+                a.click(); URL.revokeObjectURL(url);
+              }}
+              title="导出 JSON"
+            >
+              <Download className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => { void save(); }}
+              disabled={!isEditable || (!hasTrajectory && points.length === 0)}
+              title="保存更改"
+            >
+              <Save className="w-3.5 h-3.5" />
+            </Button>
+          </div>
+          <div className="text-[11px] text-muted-foreground min-w-[90px] text-right">
+            {saveStatus === "saving" && "保存中..."}
+            {saveStatus === "success" && lastSavedAt && `已保存 ${lastSavedAt.toLocaleTimeString()}`}
+            {saveStatus === "error" && <span className="text-red-400">保存失败</span>}
           </div>
         </div>
       </div>
@@ -434,43 +489,6 @@ export default function TrajectoryEditor({
         </div>
       </div>
 
-      <div className="flex gap-2 pt-2 shrink-0">
-        <Button 
-          variant="outline" 
-          size="sm" 
-          className="flex-1 h-8 text-xs gap-1.5"
-          onClick={() => isEditable && fileInputRef.current?.click()}
-          disabled={!isEditable}
-        >
-          <Upload className="w-3.5 h-3.5" />
-          导入 JSON
-        </Button>
-        <Button 
-          variant="outline" 
-          size="sm" 
-          className="flex-1 h-8 text-xs gap-1.5"
-          onClick={() => {
-            const json = JSON.stringify({ meta: { name: meta.name ?? mission.name, coord: meta.coord ?? "local-xyz", note: meta.note ?? "" }, points }, null, 2);
-            const blob = new Blob([json], { type: "application/json" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = `${mission.name}-trajectory.json`;
-            a.click(); URL.revokeObjectURL(url);
-          }}
-        >
-          <Download className="w-3.5 h-3.5" />
-          导出 JSON
-        </Button>
-        <Button 
-          size="sm" 
-          className="flex-1 h-8 text-xs gap-1.5"
-          onClick={save} 
-          disabled={!isEditable || (!hasTrajectory && points.length === 0)}
-        >
-          <Save className="w-3.5 h-3.5" />
-          保存更改
-        </Button>
-      </div>
       <input
         ref={fileInputRef}
         type="file"
