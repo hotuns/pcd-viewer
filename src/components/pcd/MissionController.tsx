@@ -15,7 +15,8 @@ import { useMissionDatabase } from "@/hooks/useMissionDatabase";
 import { useRosConnection } from "@/hooks/useRosConnection";
 import { useMissionRuntime } from "@/hooks/useMissionRuntime";
 import type { Mission, MissionHomePosition, PlannedPoint, Waypoint } from "@/types/mission";
-import { PlugZap, SatelliteDish, Undo2, CheckCircle2, Edit3, FileCheck2, ArrowRight, ChevronsLeft, ChevronsRight, Bug, X, Maximize2 } from "lucide-react";
+import { PlugZap, SatelliteDish, Undo2, CheckCircle2, Edit3, FileCheck2, ArrowRight, ChevronsLeft, ChevronsRight, Bug, X, Maximize2, Eye, EyeOff } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { normalizeTaskType } from "@/lib/taskTypes";
 import { convertBodyPositionToViewer, convertViewerPositionToBody } from "@/lib/frameTransforms";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -74,6 +75,9 @@ export default function MissionController({ initialMission, onBack }: MissionCon
   const [selectedPathIndex, setSelectedPathIndex] = useState<number | null>(null);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [editorHeight, setEditorHeight] = useState(280);
+  const [sceneCloudVisible, setSceneCloudVisible] = useState(true);
+  const [sceneRenderMode, setSceneRenderMode] = useState<'points' | 'mesh' | 'voxel'>('points');
+  const [sceneColorMode, setSceneColorMode] = useState<'none' | 'height' | 'intensity' | 'rgb'>('none');
   const editorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const canvasRef = useRef<PCDCanvasHandle | null>(null);
   const { updateMission: updateMissionDB } = useMissionDatabase();
@@ -587,7 +591,9 @@ export default function MissionController({ initialMission, onBack }: MissionCon
             currentWaypointIndex={currentWaypointIndex}
             dronePosition={missionRuntime.dronePosition}
             followDrone={followDrone}
-            showSceneCloud
+            showSceneCloud={sceneCloudVisible}
+            colorMode={sceneColorMode}
+            sceneRenderMode={sceneRenderMode}
             showGrid
             showAxes
           />
@@ -613,6 +619,30 @@ export default function MissionController({ initialMission, onBack }: MissionCon
                 </Button>
               </div>
             </div>
+            <div className="flex items-center gap-2 text-[11px] text-slate-300">
+              <span>点云:</span>
+              <Select value={sceneRenderMode} onValueChange={(value) => setSceneRenderMode(value as 'points' | 'mesh' | 'voxel')}>
+                <SelectTrigger className="h-7 w-[90px] bg-slate-900 border-slate-600 text-xs text-slate-100">
+                  <SelectValue placeholder="模式" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="points">点云</SelectItem>
+                  <SelectItem value="voxel">体素</SelectItem>
+                  <SelectItem value="mesh">网格</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={sceneColorMode} onValueChange={(value) => setSceneColorMode(value as 'none' | 'height' | 'intensity' | 'rgb')}>
+                <SelectTrigger className="h-7 w-[110px] bg-slate-900 border-slate-600 text-xs text-slate-100">
+                  <SelectValue placeholder="着色" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">原色/灰度</SelectItem>
+                  <SelectItem value="height">高度渐变</SelectItem>
+                  <SelectItem value="intensity">强度渐变</SelectItem>
+                  <SelectItem value="rgb">RGB 属性</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <Button
               variant="outline"
               size="sm"
@@ -621,6 +651,15 @@ export default function MissionController({ initialMission, onBack }: MissionCon
               title="视图适配"
             >
               <Maximize2 className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              variant={sceneCloudVisible ? "outline" : "destructive"}
+              size="sm"
+              className="h-7 px-2"
+              onClick={() => setSceneCloudVisible((prev) => !prev)}
+              title={sceneCloudVisible ? "隐藏场景点云" : "显示场景点云"}
+            >
+              {sceneCloudVisible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
             </Button>
             <Button variant="outline" size="sm" className="flex items-center gap-1 text-xs" onClick={() => setShowDetails((prev) => !prev)}>
               {showDetails ? "隐藏面板" : "显示面板"}

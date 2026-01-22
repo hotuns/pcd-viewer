@@ -57,15 +57,16 @@ export type PCDCanvasProps = {
   source?: Source | null;
   livePointClouds?: Float32Array[];
   pointSize?: number;
+  performanceMode?: boolean;
   showGrid?: boolean;
   showAxes?: boolean;
   showSceneCloud?: boolean; // 场景点云显示开关
   colorMode?: "none" | "rgb" | "intensity" | "height"; // none 表示禁用伪着色
   roundPoints?: boolean; // 使用圆盘精灵渲染点
-  voxelized?: boolean; // 是否使用体素化渲染
   voxelSize?: number; // 体素大小（米）
   onLoadedAction?: (info: { bbox: THREE.Box3; count: number }) => void;
   onLoadingChange?: (loading: boolean) => void;
+  sceneRenderMode?: 'points' | 'mesh' | 'voxel';
   plannedPathPoints?: PlannedPoint[]; // 用于渲染编辑航线
   plannedPathVisible?: boolean;
   plannedPointSize?: number; // 航点球体大小（半径）
@@ -189,12 +190,11 @@ function SceneResetter({
 }
 
 export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PCDCanvas(
-  { source, livePointClouds = [], pointSize = 0.01, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, voxelized = false, voxelSize = 0.05, onLoadedAction, onLoadingChange, plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathLineWidth = 2, plannedPathEditable = false, onPlannedPointsChange, selectedPointIndex, onSelectPoint, dronePosition, followDrone = false, waypoints, currentWaypointIndex },
+  { source, livePointClouds = [], pointSize = 0.01, performanceMode = false, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, voxelSize = 0.2, onLoadedAction, onLoadingChange, sceneRenderMode = 'points', plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathLineWidth = 2, plannedPathEditable = false, onPlannedPointsChange, selectedPointIndex, onSelectPoint, dronePosition, followDrone = false, waypoints, currentWaypointIndex },
   ref
 ) {
   const [geom, setGeom] = useState<THREE.BufferGeometry | null>(null);
-  const [mesh, setMesh] = useState<THREE.Mesh | null>(null); // 新增：存储网格对象
-  const [renderMode, setRenderMode] = useState<'points' | 'mesh'>('points'); // 新增：渲染模式
+  const [mesh, setMesh] = useState<THREE.Mesh | null>(null); // 存储网格对象
   const [bbox, setBbox] = useState<THREE.Box3 | null>(null);
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const fitRef = useRef<(() => void) | null>(null);
@@ -208,6 +208,18 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
       return { geometry, opacity: Math.max(0.15, 0.75 - index * 0.08) };
     });
   }, [livePointClouds]);
+
+  const effectiveRenderMode: 'points' | 'mesh' | 'voxel' = useMemo(() => {
+    if (sceneRenderMode === 'mesh') {
+      if (mesh) return 'mesh';
+      return geom ? 'points' : 'mesh';
+    }
+    if (sceneRenderMode === 'voxel') {
+      if (geom) return 'voxel';
+      return mesh ? 'mesh' : 'points';
+    }
+    return geom ? 'points' : (mesh ? 'mesh' : 'points');
+  }, [sceneRenderMode, mesh, geom]);
 
   useEffect(() => {
     return () => {
@@ -428,7 +440,6 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           
           setMesh(meshObj);
           setGeom(geometry);
-          setRenderMode('mesh');
           
           const b = geometry.boundingBox ?? new THREE.Box3().setFromObject(meshObj);
           const clone = b.clone();
@@ -457,9 +468,9 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           
           const geometry = points.geometry as THREE.BufferGeometry;
           convertGeometryPositionsToViewer(geometry);
-          setGeom(geometry);
+          const processed = performanceMode ? convertGeometryPositionsToViewer(geometry) : geometry;
+          setGeom(processed);
           setMesh(null);
-          setRenderMode('points');
           
           const b = geometry.boundingBox ?? new THREE.Box3().setFromObject(points);
           const clone = b.clone();
@@ -562,11 +573,11 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
       // 以 z 高度着色
       let minZ = Infinity, maxZ = -Infinity;
       for (let i = 0; i < count; i++) {
-        const z = pos.getZ(i); if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+        const z = pos.getY(i); if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
       }
       const spanZ = maxZ - minZ || 1;
       for (let i = 0; i < count; i++) {
-        const z = (pos.getZ(i) - minZ) / spanZ;
+        const z = (pos.getY(i) - minZ) / spanZ;
         const [r, gC, b] = mapScalarToRGB(z);
         setRGB(i, r, gC, b);
       }
@@ -649,7 +660,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         )}
         
         {/* 场景渲染：根据模式选择渲染方式 */}
-        {showSceneCloud && renderMode === 'points' && geom && !voxelized && (
+        {showSceneCloud && effectiveRenderMode === 'points' && geom && (
           <points key={colorVersion} geometry={geom} frustumCulled={false}>
             <pointsMaterial
               size={pointSize}
@@ -664,7 +675,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         )}
         
         {/* 体素化点云渲染 */}
-        {showSceneCloud && renderMode === 'points' && geom && voxelized && (
+        {showSceneCloud && effectiveRenderMode === 'voxel' && geom && (
           <VoxelizedPointCloud 
             geometry={geom} 
             voxelSize={voxelSize}
@@ -672,7 +683,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         )}
         
         {/* PLY 网格渲染 */}
-        {showSceneCloud && renderMode === 'mesh' && mesh && (
+        {showSceneCloud && effectiveRenderMode === 'mesh' && mesh && (
           <primitive object={mesh} key={colorVersion} />
         )}
 
