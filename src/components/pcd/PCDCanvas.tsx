@@ -47,6 +47,57 @@ const convertGeometryPositionsToViewer = (geometry: THREE.BufferGeometry) => {
   return geometry;
 };
 
+const downsampleGeometry = (geometry: THREE.BufferGeometry, voxelSize = 0.2) => {
+  const positionAttr = geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
+  if (!positionAttr) return geometry;
+  const colorAttr = geometry.getAttribute("color") as THREE.BufferAttribute | undefined;
+  const normalAttr = geometry.getAttribute("normal") as THREE.BufferAttribute | undefined;
+  const buckets = new Map<string, { position: [number, number, number]; color?: [number, number, number]; normal?: [number, number, number] }>();
+
+  for (let i = 0; i < positionAttr.count; i++) {
+    const x = positionAttr.getX(i);
+    const y = positionAttr.getY(i);
+    const z = positionAttr.getZ(i);
+    const key = `${Math.round(x / voxelSize)}_${Math.round(y / voxelSize)}_${Math.round(z / voxelSize)}`;
+    if (buckets.has(key)) continue;
+    const color = colorAttr ? [colorAttr.getX(i), colorAttr.getY(i), colorAttr.getZ(i)] as [number, number, number] : undefined;
+    const normal = normalAttr ? [normalAttr.getX(i), normalAttr.getY(i), normalAttr.getZ(i)] as [number, number, number] : undefined;
+    buckets.set(key, { position: [x, y, z], color, normal });
+  }
+
+  if (buckets.size === positionAttr.count) return geometry;
+
+  const positions = new Float32Array(buckets.size * 3);
+  const colors = colorAttr ? new Float32Array(buckets.size * 3) : null;
+  const normals = normalAttr ? new Float32Array(buckets.size * 3) : null;
+  let idx = 0;
+  buckets.forEach(({ position, color, normal }) => {
+    positions[idx * 3] = position[0];
+    positions[idx * 3 + 1] = position[1];
+    positions[idx * 3 + 2] = position[2];
+    if (colors && color) {
+      colors[idx * 3] = color[0];
+      colors[idx * 3 + 1] = color[1];
+      colors[idx * 3 + 2] = color[2];
+    }
+    if (normals && normal) {
+      normals[idx * 3] = normal[0];
+      normals[idx * 3 + 1] = normal[1];
+      normals[idx * 3 + 2] = normal[2];
+    }
+    idx++;
+  });
+
+  const simplified = new THREE.BufferGeometry();
+  simplified.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  if (colors) simplified.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  if (normals) simplified.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+  simplified.computeBoundingBox();
+  simplified.computeBoundingSphere();
+  geometry.dispose();
+  return simplified;
+};
+
 export type PCDCanvasHandle = {
   fitToView: () => void;
   zoomToCenter: () => void;
@@ -209,17 +260,22 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
     });
   }, [livePointClouds]);
 
+  const effectiveRenderPreference = performanceMode ? 'voxel' : sceneRenderMode;
   const effectiveRenderMode: 'points' | 'mesh' | 'voxel' = useMemo(() => {
-    if (sceneRenderMode === 'mesh') {
+    if (effectiveRenderPreference === 'mesh') {
       if (mesh) return 'mesh';
       return geom ? 'points' : 'mesh';
     }
-    if (sceneRenderMode === 'voxel') {
+    if (effectiveRenderPreference === 'voxel') {
       if (geom) return 'voxel';
       return mesh ? 'mesh' : 'points';
     }
     return geom ? 'points' : (mesh ? 'mesh' : 'points');
-  }, [sceneRenderMode, mesh, geom]);
+  }, [effectiveRenderPreference, mesh, geom]);
+
+  const appliedPointSize = performanceMode ? Math.max(pointSize * 0.7, 0.005) : pointSize;
+  const fadeNear = performanceMode ? 1.5 : 2.0;
+  const fadeFar = performanceMode ? 5.5 : 8.0;
 
   useEffect(() => {
     return () => {
@@ -228,6 +284,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
   }, [liveCloudGeometries]);
   // 生成一个圆形纹理用于点精灵（圆盘效果，边缘柔和）
   const circleTexture = useRef<THREE.Texture | null>(null);
+  const pointMaterialRef = useRef<THREE.PointsMaterial | null>(null);
   if (roundPoints && !circleTexture.current && typeof document !== 'undefined') {
     const size = 64;
     const canvas = document.createElement('canvas');
@@ -251,6 +308,38 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
     tex.minFilter = THREE.LinearMipMapLinearFilter;
     circleTexture.current = tex;
   }
+  useEffect(() => {
+    const material = pointMaterialRef.current;
+    if (!material) return;
+    if (!material.userData._fadePatched) {
+      material.onBeforeCompile = (shader) => {
+        shader.uniforms.uFadeNear = { value: fadeNear };
+        shader.uniforms.uFadeFar = { value: fadeFar };
+        material.userData._fadeUniforms = shader.uniforms;
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <common>',
+          '#include <common>\nvarying float vViewDistance;'
+        ).replace(
+          '#include <project_vertex>',
+          '#include <project_vertex>\nvViewDistance = length(mvPosition.xyz);'
+        );
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <common>',
+          '#include <common>\nuniform float uFadeNear;\nuniform float uFadeFar;\nvarying float vViewDistance;'
+        ).replace(
+          '#include <color_fragment>',
+          '#include <color_fragment>\nfloat fadeFactor = smoothstep(uFadeNear, uFadeFar, vViewDistance);\nif (fadeFactor <= 0.01) discard;\ndiffuseColor.a *= fadeFactor;'
+        );
+      };
+      material.userData._fadePatched = true;
+      material.needsUpdate = true;
+    }
+    const uniforms = material.userData._fadeUniforms;
+    if (uniforms) {
+      uniforms.uFadeNear.value = fadeNear;
+      uniforms.uFadeFar.value = fadeFar;
+    }
+  }, [fadeNear, fadeFar]);
   // 使用 ref 保存回调，避免因父组件函数身份变化导致重复加载
   const onLoadedRef = useRef<typeof onLoadedAction>(onLoadedAction);
   const onLoadingChangeRef = useRef<typeof onLoadingChange>(onLoadingChange);
@@ -467,16 +556,16 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
           if (cancelled) return;
           
           const geometry = points.geometry as THREE.BufferGeometry;
-          convertGeometryPositionsToViewer(geometry);
-          const processed = performanceMode ? convertGeometryPositionsToViewer(geometry) : geometry;
-          setGeom(processed);
+          const processed = convertGeometryPositionsToViewer(geometry);
+          const optimized = performanceMode ? downsampleGeometry(processed, voxelSize) : processed;
+          setGeom(optimized);
           setMesh(null);
           
-          const b = geometry.boundingBox ?? new THREE.Box3().setFromObject(points);
-          const clone = b.clone();
+          const bboxSource = optimized.boundingBox ?? new THREE.Box3().setFromObject(points);
+          const clone = bboxSource.clone();
           setBbox(clone);
           
-          const pos = geometry.getAttribute("position");
+          const pos = optimized.getAttribute("position");
           const count = pos?.count ?? 0;
           onLoadedRef.current?.({ bbox: clone, count });
           setTimeout(() => fitRef.current?.(), 0);
@@ -523,7 +612,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
     const count = (g.getAttribute("position") as THREE.BufferAttribute | undefined)?.count ?? 0;
     if (count === 0) return;
 
-    const colors = new Float32Array(count * 3);
+      const colors = new Float32Array(count * 3);
     const setRGB = (i: number, r: number, g: number, b: number) => {
       const o = i * 3; colors[o] = r; colors[o + 1] = g; colors[o + 2] = b;
     };
@@ -663,11 +752,12 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         {showSceneCloud && effectiveRenderMode === 'points' && geom && (
           <points key={colorVersion} geometry={geom} frustumCulled={false}>
             <pointsMaterial
-              size={pointSize}
+              ref={pointMaterialRef}
+              size={appliedPointSize}
               sizeAttenuation
               vertexColors={!!geom.getAttribute("color")}
               map={roundPoints ? circleTexture.current ?? undefined : undefined}
-              transparent={roundPoints}
+              transparent
               alphaTest={roundPoints ? 0.5 : 0}
               depthWrite={!roundPoints}
             />

@@ -78,6 +78,7 @@ export default function MissionController({ initialMission, onBack }: MissionCon
   const [sceneCloudVisible, setSceneCloudVisible] = useState(true);
   const [sceneRenderMode, setSceneRenderMode] = useState<'points' | 'mesh' | 'voxel'>('points');
   const [sceneColorMode, setSceneColorMode] = useState<'none' | 'height' | 'intensity' | 'rgb'>('none');
+  const [performanceMode, setPerformanceMode] = useState(false);
   const editorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const canvasRef = useRef<PCDCanvasHandle | null>(null);
   const { updateMission: updateMissionDB } = useMissionDatabase();
@@ -594,6 +595,7 @@ export default function MissionController({ initialMission, onBack }: MissionCon
             showSceneCloud={sceneCloudVisible}
             colorMode={sceneColorMode}
             sceneRenderMode={sceneRenderMode}
+            performanceMode={performanceMode}
             showGrid
             showAxes
           />
@@ -660,6 +662,14 @@ export default function MissionController({ initialMission, onBack }: MissionCon
               title={sceneCloudVisible ? "隐藏场景点云" : "显示场景点云"}
             >
               {sceneCloudVisible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+            </Button>
+            <Button
+              variant={performanceMode ? "default" : "outline"}
+              size="sm"
+              className="h-7 px-3 text-xs"
+              onClick={() => setPerformanceMode((prev) => !prev)}
+            >
+              {performanceMode ? "性能模式 ON" : "性能模式"}
             </Button>
             <Button variant="outline" size="sm" className="flex items-center gap-1 text-xs" onClick={() => setShowDetails((prev) => !prev)}>
               {showDetails ? "隐藏面板" : "显示面板"}
