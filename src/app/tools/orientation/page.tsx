@@ -3,6 +3,7 @@
 import { Suspense, useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Grid } from "@react-three/drei";
+import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import * as THREE from "three";
 import { DroneModel } from "@/components/pcd/DroneModel";
 import { Input } from "@/components/ui/input";
@@ -40,7 +41,7 @@ export default function DroneOrientationTool() {
 
   const pointMaterialRef = useRef<THREE.PointsMaterial | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const controlsRef = useRef<any>(null);
+  const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const axesHelper = useMemo(() => new THREE.AxesHelper(2), []);
 
   const applyViewPreset = useCallback((preset: 'xy' | 'xz' | 'yz' | 'iso') => {
@@ -64,17 +65,20 @@ export default function DroneOrientationTool() {
   }, []);
 
   useEffect(() => {
+    const geometry = pointGeometry;
+    const mesh = pointMesh;
+    const material = pointMaterialRef.current;
     return () => {
-      pointGeometry?.dispose?.();
-      if (pointMesh) {
-        pointMesh.geometry?.dispose?.();
-        if (Array.isArray(pointMesh.material)) {
-          pointMesh.material.forEach((mat) => mat.dispose?.());
+      geometry?.dispose?.();
+      if (mesh) {
+        mesh.geometry?.dispose?.();
+        if (Array.isArray(mesh.material)) {
+          mesh.material.forEach((mat) => mat.dispose?.());
         } else {
-          pointMesh.material?.dispose?.();
+          mesh.material?.dispose?.();
         }
       }
-      pointMaterialRef.current?.dispose?.();
+      material?.dispose?.();
     };
   }, [pointGeometry, pointMesh]);
 
@@ -126,7 +130,7 @@ export default function DroneOrientationTool() {
       if (ext === "pcd") {
         const loader = new PCDLoader();
         const buffer = await file.arrayBuffer();
-        const points = loader.parse(buffer, file.name) as THREE.Points;
+        const points = loader.parse(buffer) as THREE.Points;
         const geometry = convertGeometryToViewer(points.geometry as THREE.BufferGeometry);
         setPointGeometry(geometry);
         setPointMesh(null);
@@ -228,7 +232,7 @@ export default function DroneOrientationTool() {
         <Canvas
           camera={{ position: [-4, 3, 4], fov: 55 }}
           onCreated={({ camera }) => {
-            cameraRef.current = camera;
+            cameraRef.current = camera as THREE.PerspectiveCamera;
             requestAnimationFrame(() => applyViewPreset(viewPreset));
           }}
         >

@@ -339,7 +339,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
       uniforms.uFadeNear.value = fadeNear;
       uniforms.uFadeFar.value = fadeFar;
     }
-  }, [fadeNear, fadeFar]);
+  }, [fadeNear, fadeFar, effectiveRenderMode, geom, colorVersion]);
   // 使用 ref 保存回调，避免因父组件函数身份变化导致重复加载
   const onLoadedRef = useRef<typeof onLoadedAction>(onLoadedAction);
   const onLoadingChangeRef = useRef<typeof onLoadingChange>(onLoadingChange);
@@ -583,7 +583,7 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
     return () => {
       cancelled = true;
     };
-  }, [source]);
+  }, [source, performanceMode, voxelSize]);
 
   // 根据模式为点云生成颜色（禁用时恢复原有颜色或移除自定义颜色）
   useEffect(() => {

@@ -12,7 +12,6 @@ const BODY_TO_VIEWER_MATRIX = new THREE.Matrix4().set(
   0,  0,  0, 1
 );
 const VIEWER_TO_BODY_MATRIX = BODY_TO_VIEWER_MATRIX.clone().invert();
-const MODEL_ALIGNMENT = new THREE.Quaternion();
 
 const tempVec = new THREE.Vector3();
 const tempMatrix = new THREE.Matrix4();
