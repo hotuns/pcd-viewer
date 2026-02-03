@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Upload, Link as LinkIcon, X, Map, Route, AlertCircle, CheckCircle2 } from "lucide-react";
 import { useMissionDatabase } from "@/hooks/useMissionDatabase";
+import { uploadMissionFile } from "@/lib/upload";
 
 interface TaskConfigPanelProps {
   selectedMission: Mission | null;
@@ -30,18 +31,9 @@ export function TaskConfigPanel({ selectedMission, onMissionUpdate }: TaskConfig
     await updateMissionDB(nextMission.id, updates);
   };
 
-  const fileToDataUrl = (file: File) => {
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  };
-
   const updateSceneFile = async (file: File) => {
-    const dataUrl = await fileToDataUrl(file);
-    persist({ scene: { type: "url", url: dataUrl } });
+    const uploadedUrl = await uploadMissionFile(file, "scene");
+    persist({ scene: { type: "url", url: uploadedUrl } });
   };
 
   const updateSceneUrl = (url: string) => {
@@ -57,8 +49,8 @@ export function TaskConfigPanel({ selectedMission, onMissionUpdate }: TaskConfig
   };
 
   const updateTrajectoryFile = async (file: File) => {
-    const dataUrl = await fileToDataUrl(file);
-    persist({ trajectory: { type: "url", url: dataUrl } });
+    const uploadedUrl = await uploadMissionFile(file, "trajectory");
+    persist({ trajectory: { type: "url", url: uploadedUrl } });
   };
 
   const updateTrajectoryUrl = (url: string) => {

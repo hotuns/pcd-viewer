@@ -62,20 +62,29 @@ function missionToRow(mission: Mission) {
 }
 
 // 将数据库行转换为 Mission 对象（不包含航点和日志）
+const normalizeFileUrl = (url: string | null) => {
+  if (!url) return null;
+  if (url.startsWith('/api/uploads/')) return url;
+  if (url.startsWith('/uploads/')) return `/api${url}`;
+  return url;
+};
+
 function rowToMission(row: MissionRow): Omit<Mission, 'waypoints' | 'executionLog'> & {
   sceneUrl?: string;
   trajectoryUrl?: string;
 } {
-  const sceneSource: Source | undefined = row.scene_url ? { type: 'url', url: row.scene_url } : undefined;
-  const trajectorySource: Source | undefined = row.trajectory_url ? { type: 'url', url: row.trajectory_url } : undefined;
+  const normalizedSceneUrl = normalizeFileUrl(row.scene_url);
+  const normalizedTrajectoryUrl = normalizeFileUrl(row.trajectory_url);
+  const sceneSource: Source | undefined = normalizedSceneUrl ? { type: 'url', url: normalizedSceneUrl } : undefined;
+  const trajectorySource: Source | undefined = normalizedTrajectoryUrl ? { type: 'url', url: normalizedTrajectoryUrl } : undefined;
   return {
     id: row.id,
     name: row.name,
     status: row.status as Mission['status'],
     scene: sceneSource,
-    sceneUrl: row.scene_url ?? undefined,
+    sceneUrl: normalizedSceneUrl ?? undefined,
     trajectory: trajectorySource,
-    trajectoryUrl: row.trajectory_url ?? undefined,
+    trajectoryUrl: normalizedTrajectoryUrl ?? undefined,
     currentWaypointIndex: row.current_waypoint_index ?? undefined,
     createdAt: new Date(row.created_at),
     startedAt: row.started_at ? new Date(row.started_at) : undefined,

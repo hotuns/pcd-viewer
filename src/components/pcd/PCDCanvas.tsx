@@ -126,6 +126,7 @@ export type PCDCanvasProps = {
   onPlannedPointsChange?: (points: PlannedPoint[]) => void; // 拖拽时回传
   selectedPointIndex?: number | null;
   onSelectPoint?: (index: number | null) => void;
+  predictedTrajectoryPoints?: PlannedPoint[];
   dronePosition?: DronePosition | null; // 无人机位置和姿态
   followDrone?: boolean; // 视角跟随飞机
   waypoints?: Waypoint[]; // 航点状态信息
@@ -241,7 +242,7 @@ function SceneResetter({
 }
 
 export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PCDCanvas(
-  { source, livePointClouds = [], pointSize = 0.01, performanceMode = false, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, voxelSize = 0.2, onLoadedAction, onLoadingChange, sceneRenderMode = 'points', plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathLineWidth = 2, plannedPathEditable = false, onPlannedPointsChange, selectedPointIndex, onSelectPoint, dronePosition, followDrone = false, waypoints, currentWaypointIndex },
+  { source, livePointClouds = [], pointSize = 0.01, performanceMode = false, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, voxelSize = 0.2, onLoadedAction, onLoadingChange, sceneRenderMode = 'points', plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathLineWidth = 2, plannedPathEditable = false, onPlannedPointsChange, selectedPointIndex, onSelectPoint, predictedTrajectoryPoints, dronePosition, followDrone = false, waypoints, currentWaypointIndex },
   ref
 ) {
   const [geom, setGeom] = useState<THREE.BufferGeometry | null>(null);
@@ -254,13 +255,29 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
   const [colorVersion, setColorVersion] = useState(0);
   const liveCloudGeometries = useMemo(() => {
     return livePointClouds.map((cloud, index) => {
+      const pointCount = Math.floor(cloud.length / 3);
+      const step = performanceMode ? 8 : 3;
+      const samples = Math.max(1, Math.floor(pointCount / step));
+      const positions = new Float32Array(samples * 3);
+      let write = 0;
+      for (let i = 0; i < pointCount && write < samples * 3; i += step) {
+        const body = {
+          x: cloud[i * 3],
+          y: cloud[i * 3 + 1],
+          z: cloud[i * 3 + 2],
+        };
+        const viewer = convertBodyPositionToViewer(body);
+        positions[write++] = viewer.x;
+        positions[write++] = viewer.y;
+        positions[write++] = viewer.z;
+      }
       const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(cloud, 3));
+      geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
       return { geometry, opacity: Math.max(0.15, 0.75 - index * 0.08) };
     });
-  }, [livePointClouds]);
+  }, [livePointClouds, performanceMode]);
 
-  const effectiveRenderPreference = performanceMode ? 'voxel' : sceneRenderMode;
+  const effectiveRenderPreference = sceneRenderMode;
   const effectiveRenderMode: 'points' | 'mesh' | 'voxel' = useMemo(() => {
     if (effectiveRenderPreference === 'mesh') {
       if (mesh) return 'mesh';
@@ -771,7 +788,20 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
             voxelSize={voxelSize}
           />
         )}
-        
+
+        {/* 预测轨迹渲染 */}
+        {Array.isArray(predictedTrajectoryPoints) && predictedTrajectoryPoints.length > 1 && (
+          <Line
+            key={`predicted-${predictedTrajectoryPoints.length}`}
+            points={predictedTrajectoryPoints.map((p) => [p.x, p.y, p.z]) as [number, number, number][]}
+            color="#f97316"
+            lineWidth={Math.max(1, plannedPathLineWidth * 0.8)}
+            dashed
+            transparent
+            opacity={0.7}
+          />
+        )}
+
         {/* PLY 网格渲染 */}
         {showSceneCloud && effectiveRenderMode === 'mesh' && mesh && (
           <primitive object={mesh} key={colorVersion} />

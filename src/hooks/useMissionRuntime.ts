@@ -26,6 +26,7 @@ const DEFAULT_ENDPOINTS = {
   waypointFeedbackTopic: "/mission/waypoint_feedback",
   controlTopic: "/mission/control",
   taskOptTopic: "/mission/task_opt",
+  plannedTrajectoryTopic: "/mission/planned_traj",
   hangarChargeTopic: "/hangar/charge_status",
   batteryTopic: "/battery/status",
   poseTopic: "/odom_visualization/pose",
@@ -157,6 +158,7 @@ export function useMissionRuntime({
   const [nestMotorStatus, setNestMotorStatus] = useState<NestMotorTelemetry | null>(null);
   const [nestAutoMode, setNestAutoMode] = useState<NestAutoModeTelemetry | null>(null);
   const [nestUavPresence, setNestUavPresence] = useState<NestUavPresenceTelemetry | null>(null);
+  const [predictedTrajectory, setPredictedTrajectory] = useState<PlannedPoint[]>([]);
 
   const missionCommandService = useRef<typeof ROSLIB.Service | null>(null);
   const missionListTopic = useRef<typeof ROSLIB.Topic | null>(null);
@@ -168,6 +170,7 @@ export function useMissionRuntime({
   const poseTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const waypointTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const pointCloudTopicRef = useRef<typeof ROSLIB.Topic | null>(null);
+  const plannedTrajectoryTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const nestStatusTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const nestBatteryTopic = useRef<typeof ROSLIB.Topic | null>(null);
   const nestMotorStatusTopic = useRef<typeof ROSLIB.Topic | null>(null);
@@ -186,6 +189,7 @@ export function useMissionRuntime({
     setProgress(null);
     setLastWaypoint(null);
     setEvents([]);
+    setPredictedTrajectory([]);
   }, [mission?.id]);
 
   const resetRosBindings = useCallback(() => {
@@ -200,6 +204,7 @@ export function useMissionRuntime({
       poseTopic,
       waypointTopic,
       pointCloudTopicRef,
+      plannedTrajectoryTopic,
       nestStatusTopic,
       nestBatteryTopic,
       nestMotorStatusTopic,
@@ -215,6 +220,7 @@ export function useMissionRuntime({
     setNestMotorStatus(null);
     setNestAutoMode(null);
     setNestUavPresence(null);
+    setPredictedTrajectory([]);
   }, []);
 
   useEffect(() => {
@@ -423,6 +429,27 @@ export function useMissionRuntime({
       } catch (error) {
         console.warn("Failed to parse point cloud", error);
       }
+    });
+
+    plannedTrajectoryTopic.current = new ROSLIB.Topic({
+      ros,
+      name: endpoints.plannedTrajectoryTopic,
+      messageType: "visualization_msgs/MarkerArray",
+    });
+
+    plannedTrajectoryTopic.current.subscribe((msg: { markers?: Array<{ points?: Array<{ x: number; y: number; z: number }>; id?: number; text?: string }> }) => {
+      const markers = Array.isArray(msg.markers) ? msg.markers : [];
+      const polyline = markers.find((marker) => Array.isArray(marker.points) && marker.points.length > 0);
+      if (!polyline) {
+        setPredictedTrajectory([]);
+        return;
+      }
+      const normalized = (polyline.points ?? []).map((p) => ({
+        x: p.x ?? 0,
+        y: p.y ?? 0,
+        z: p.z ?? 0,
+      }));
+      setPredictedTrajectory(normalized);
     });
     nestStatusTopic.current = new ROSLIB.Topic({
       ros,
@@ -745,6 +772,7 @@ export function useMissionRuntime({
     pendingCount: pendingWaypoints.length,
     canResume: resumeAvailable,
     pointClouds: pointCloudStack,
+    predictedTrajectory,
     debugLogs: rosDebugLogs,
     clearDebugLogs,
     nest: nestTelemetry,

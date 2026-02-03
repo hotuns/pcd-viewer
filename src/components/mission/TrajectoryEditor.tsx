@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,7 +12,8 @@ import {
   Download, 
   Upload,
   MapPin,
-  Clock
+  Clock,
+  Plus
 } from "lucide-react";
 import type { Mission, PlannedPoint } from "@/types/mission";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -47,6 +48,7 @@ export default function TrajectoryEditor({
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const hasTrajectory = !!mission.trajectory;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const rowRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   const parseTrajectoryJson = (text: string) => {
     const parsed = JSON.parse(text);
@@ -109,46 +111,50 @@ export default function TrajectoryEditor({
 
   const isEditable = editable !== false;
 
-  const addPoint = () => {
+  const makePoint = (reference?: Waypoint, overrides?: Partial<Waypoint>): Waypoint => ({
+    x: overrides?.x ?? reference?.x ?? 0,
+    y: overrides?.y ?? reference?.y ?? 0,
+    z: overrides?.z ?? reference?.z ?? 0,
+    w: overrides?.w ?? reference?.w ?? 0,
+    t: overrides?.t ?? (reference?.t ?? 0),
+    task_type: overrides?.task_type ?? reference?.task_type ?? 0,
+    info: overrides?.info ?? reference?.info,
+  });
+
+  const insertPoint = (insertIndex: number, reference?: Waypoint, overrides?: Partial<Waypoint>) => {
     if (!isEditable) return;
-    const insertIndex = lockAnchors ? Math.max(points.length - 1, 1) : points.length;
-    const reference = points[Math.max(insertIndex - 1, 0)];
-    const nextPoint: Waypoint = {
-      x: reference?.x ?? 0,
-      y: reference?.y ?? 0,
-      z: reference?.z ?? 0,
-      w: reference?.w ?? 0,
-      t: (reference?.t ?? -1) + 1,
-      task_type: reference?.task_type ?? 0,
-    };
+    const nextPoint = makePoint(reference, overrides);
     const next = points.slice();
     next.splice(insertIndex, 0, nextPoint);
     setPoints(next);
     onPointsChangeAction?.(next);
+  };
+
+  const addPoint = () => {
+    const insertIndex = lockAnchors ? Math.max(points.length - 1, 1) : points.length;
+    const reference = points[Math.max(insertIndex - 1, 0)];
+    insertPoint(insertIndex, reference);
   };
   const addManualPoint = () => {
     if (!isEditable) return;
     const x = Number(manualInput.x);
     const y = Number(manualInput.y);
     const z = Number(manualInput.z);
-    const w = Number(manualInput.w);
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) || !Number.isFinite(w)) {
+    const wDeg = Number(manualInput.w);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) || !Number.isFinite(wDeg)) {
       alert("请输入有效的数字坐标");
       return;
     }
     const taskTypeValue = normalizeTaskType(manualInput.task_type) ?? 0;
     const insertIndex = lockAnchors ? Math.max(points.length - 1, 1) : points.length;
-    const next = points.slice();
-    next.splice(insertIndex, 0, {
+    insertPoint(insertIndex, points[Math.max(insertIndex - 1, 0)], {
       x,
       y,
       z,
-      w,
+      w: (wDeg * Math.PI) / 180,
       t: (points.at(insertIndex - 1)?.t ?? points.at(-1)?.t ?? -1) + 1,
       task_type: taskTypeValue,
     });
-    setPoints(next);
-    onPointsChangeAction?.(next);
     setManualInput({ x: "", y: "", z: "", w: "", task_type: taskTypeValue.toString() });
   };
   const removePoint = (idx: number) => {
@@ -167,6 +173,22 @@ export default function TrajectoryEditor({
     [arr[idx], arr[j]] = [arr[j], arr[idx]];
     setPoints(arr);
     onPointsChangeAction?.(arr);
+  };
+
+  const updatePoint = useCallback((index: number, patch: Partial<Waypoint>) => {
+    if (!isEditable) return;
+    setPoints((prev) => {
+      const next = prev.map((pt, i) => (i === index ? { ...pt, ...patch } : pt));
+      onPointsChangeAction?.(next);
+      return next;
+    });
+  }, [isEditable, onPointsChangeAction]);
+
+  const insertAfter = (idx: number) => {
+    if (!isEditable) return;
+    const targetIndex = Math.min(idx + 1, lockAnchors ? Math.max(points.length - 1, 1) : points.length);
+    const reference = points[idx];
+    insertPoint(targetIndex, reference);
   };
 
   const save = async () => {
@@ -216,6 +238,14 @@ export default function TrajectoryEditor({
       return merged;
     });
   }, [externalPoints]);
+
+  useEffect(() => {
+    if (selectedIndex == null) return;
+    const target = rowRefs.current[selectedIndex];
+    if (target) {
+      target.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [selectedIndex]);
 
   return (
     <div className="space-y-4 p-2 h-full flex flex-col">
@@ -279,26 +309,26 @@ export default function TrajectoryEditor({
 
       <div className="rounded-lg border border-dashed border-muted/60 p-3 text-xs space-y-2">
         <div className="text-xs font-semibold text-muted-foreground">手动输入航点</div>
-        <div className="flex flex-wrap items-center gap-2 md:flex-nowrap">
+        <div className="grid grid-cols-5 gap-2">
           {(["x", "y", "z"] as const).map((axis) => (
             <Input
               key={axis}
-              type="number"
+              type="text"
               inputMode="decimal"
               placeholder={axis.toUpperCase()}
               value={manualInput[axis]}
               onChange={(e) => setManualInput((prev) => ({ ...prev, [axis]: e.target.value }))}
-              className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100 flex-1 min-w-[80px]"
+              className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100"
               disabled={!isEditable}
             />
           ))}
           <Input
-            type="number"
+            type="text"
             inputMode="decimal"
-            placeholder="Yaw (rad)"
+            placeholder="Yaw (°)"
             value={manualInput.w}
             onChange={(e) => setManualInput((prev) => ({ ...prev, w: e.target.value }))}
-            className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100 flex-1 min-w-[100px]"
+            className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100"
             disabled={!isEditable}
           />
           <Select
@@ -306,7 +336,7 @@ export default function TrajectoryEditor({
             onValueChange={(value) => setManualInput((prev) => ({ ...prev, task_type: value }))}
             disabled={!isEditable}
           >
-            <SelectTrigger className="h-7 text-xs w-full bg-slate-900 border-slate-700 text-slate-100 min-w-[150px]">
+            <SelectTrigger className="h-7 text-xs w-full bg-slate-900 border-slate-700 text-slate-100">
               <SelectValue placeholder="任务类型" />
             </SelectTrigger>
             <SelectContent>
@@ -317,15 +347,15 @@ export default function TrajectoryEditor({
               ))}
             </SelectContent>
           </Select>
-          <Button
-            size="sm"
-            className="h-7 text-xs px-3 shrink-0"
-            onClick={addManualPoint}
-            disabled={!isEditable}
-          >
-            添加
-          </Button>
         </div>
+        <Button
+          size="sm"
+          className="h-7 text-xs px-3"
+          onClick={addManualPoint}
+          disabled={!isEditable}
+        >
+          添加
+        </Button>
       </div>
 
       {!isEditable && (
@@ -335,20 +365,20 @@ export default function TrajectoryEditor({
       )}
 
       <div className="grid grid-cols-2 gap-3 shrink-0 p-3 bg-muted/30 rounded-lg border border-border/50">
-        <div className="space-y-1">
+        <div className="space-y-0.5">
           <Label className="text-xs text-muted-foreground">名称</Label>
           <Input 
-            className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100" 
+            className="h-6 text-[11px] bg-slate-900 border-slate-700 text-slate-100" 
             value={meta.name ?? ""} 
             onChange={(e) => setMeta({ ...meta, name: e.target.value })} 
             placeholder="航线名称"
             disabled={!isEditable}
           />
         </div>
-        <div className="space-y-1">
+        <div className="space-y-0.5">
           <Label className="text-xs text-muted-foreground">坐标系</Label>
           <Input 
-            className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100" 
+            className="h-6 text-[11px] bg-slate-900 border-slate-700 text-slate-100" 
             value={meta.coord ?? "local-xyz"} 
             onChange={(e) => setMeta({ ...meta, coord: e.target.value })} 
             placeholder="local-xyz"
@@ -358,7 +388,7 @@ export default function TrajectoryEditor({
         <div className="col-span-2 space-y-1">
           <Label className="text-xs text-muted-foreground">备注</Label>
           <Input 
-            className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100" 
+            className="h-6 text-[11px] bg-slate-900 border-slate-700 text-slate-100" 
             value={meta.note ?? ""} 
             onChange={(e) => setMeta({ ...meta, note: e.target.value })} 
             placeholder="添加备注信息..."
@@ -368,67 +398,67 @@ export default function TrajectoryEditor({
       </div>
 
       <div className="flex-1 border border-slate-800 rounded-md bg-slate-900/50 flex flex-col min-h-[200px]">
-        <div className="grid grid-cols-[40px_minmax(0,1fr)_120px_150px_100px] gap-2 p-2 text-xs font-medium text-muted-foreground border-b bg-muted/50"> 
+        <div className="grid grid-cols-[32px_repeat(5,minmax(0,1fr))_88px] gap-1.5 p-1.5 text-xs font-medium text-muted-foreground border-b bg-muted/50">
           <div className="text-center">#</div>
-          <div>坐标 (X, Y, Z)</div>
-          <div className="text-center">偏航 (rad)</div>
+          <div className="text-center">X</div>
+          <div className="text-center">Y</div>
+          <div className="text-center">Z</div>
+          <div className="text-center">偏航 (°)</div>
           <div className="text-center">任务类型</div>
           <div className="text-right pr-2">操作</div>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1">
           <div className="divide-y divide-border/50">
-            {points.map((p, i) => (
-              <div
-                key={i}
-                className={`grid grid-cols-[40px_minmax(0,1fr)_120px_150px_100px] gap-2 p-2 items-center transition-colors group cursor-pointer ${selectedIndex === i ? "bg-primary/10 border border-primary/30 rounded-md" : "hover:bg-muted/30"}`}
-                onClick={() => onSelectIndex?.(i)}
-              >
-                <div className="text-xs text-muted-foreground text-center font-mono">{i + 1}</div>
-                <div className="space-y-1">
-                  <div className="text-xs font-mono text-foreground">
-                    [{p.x.toFixed(2)}, {p.y.toFixed(2)}, {p.z.toFixed(2)}]
-                  </div>
-                  {p.t != null && (
-                    <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                      <Clock className="w-3 h-3" />
-                      <span>t={p.t}</span>
-                    </div>
-                  )}
-                  {lockAnchors && (i === 0 || i === points.length - 1) && (
-                    <div className="text-[10px] uppercase tracking-wide text-primary">已锁定 HomePos</div>
-                  )}
-                </div>
-                <div className="flex items-center">
+            {points.map((p, i) => {
+              const anchorLocked = lockAnchors && (i === 0 || i === points.length - 1);
+              return (
+                <div
+                  key={i}
+                  ref={(el) => {
+                    rowRefs.current[i] = el;
+                  }}
+                  className={`grid grid-cols-[32px_repeat(5,minmax(0,1fr))_88px] gap-1.5 p-1.5 items-center transition-colors group cursor-pointer ${selectedIndex === i ? "bg-primary/10 border border-primary/30 rounded-md" : "hover:bg-muted/30"}`}
+                  onClick={() => onSelectIndex?.(i)}
+                >
+                  <div className="text-[11px] text-muted-foreground text-center font-mono">{i + 1}</div>
+                  {(["x", "y", "z"] as const).map((axis) => (
                     <Input
-                      className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100"
-                    type="number"
+                      key={`${axis}-${i}`}
+                      className="h-6 text-[11px] bg-slate-900 border-slate-700 text-slate-100"
+                      type="text"
+                      inputMode="decimal"
+                      value={p[axis] ?? 0}
+                      onChange={(e) => {
+                        const value = Number(e.target.value);
+                        if (!Number.isFinite(value)) return;
+                        updatePoint(i, { [axis]: value } as Partial<Waypoint>);
+                      }}
+                      disabled={!isEditable || anchorLocked}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  ))}
+                  <Input
+                    className="h-6 text-[11px] bg-slate-900 border-slate-700 text-slate-100"
+                    type="text"
                     inputMode="decimal"
-                    value={p.w ?? 0}
+                    value={((p.w ?? 0) * 180) / Math.PI}
                     onChange={(e) => {
                       const value = Number(e.target.value);
-                      setPoints((prev) => {
-                        const next = prev.map((pt, idx) => (idx === i ? { ...pt, w: Number.isFinite(value) ? value : pt.w } : pt));
-                        onPointsChangeAction?.(next);
-                        return next;
-                      });
+                      if (!Number.isFinite(value)) return;
+                      updatePoint(i, { w: (value * Math.PI) / 180 });
                     }}
-                    disabled={!isEditable || (lockAnchors && (i === 0 || i === points.length - 1))}
+                    disabled={!isEditable || anchorLocked}
                     onPointerDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
                   />
-                </div>
-                <div className="flex items-center">
                   <Select
                     value={(p.task_type ?? 0).toString()}
                     onValueChange={(value) => {
                       const parsed = normalizeTaskType(value) ?? 0;
-                      setPoints((prev) => {
-                        const next = prev.map((pt, idx) => (idx === i ? { ...pt, task_type: parsed } : pt));
-                        onPointsChangeAction?.(next);
-                        return next;
-                      });
+                      updatePoint(i, { task_type: parsed } as Partial<Waypoint>);
                     }}
-                    disabled={!isEditable || (lockAnchors && (i === 0 || i === points.length - 1))}
+                    disabled={!isEditable || anchorLocked}
                   >
                     <SelectTrigger className="h-7 text-xs w-full bg-slate-900 border-slate-700 text-slate-100" onPointerDown={(e) => e.stopPropagation()}>
                       <SelectValue />
@@ -441,41 +471,62 @@ export default function TrajectoryEditor({
                       ))}
                     </SelectContent>
                   </Select>
+                  <div className="flex items-center justify-end gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-5 w-5"
+                      onClick={() => insertAfter(i)}
+                      disabled={!isEditable || (lockAnchors && i >= points.length - 1)}
+                      title="在下方插入航点"
+                    >
+                      <Plus className="w-3 h-3" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-5 w-5"
+                      onClick={() => move(i, -1)}
+                      disabled={i === 0 || !isEditable || anchorLocked}
+                      title="上移"
+                    >
+                      <ArrowUp className="w-3 h-3" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-5 w-5"
+                      onClick={() => move(i, 1)}
+                      disabled={i === points.length - 1 || !isEditable || anchorLocked}
+                      title="下移"
+                    >
+                      <ArrowDown className="w-3 h-3" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                      onClick={() => removePoint(i)}
+                      disabled={!isEditable || anchorLocked}
+                      title="删除"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </Button>
+                  </div>
+                  {(p.t != null || anchorLocked) && (
+                    <div className="col-span-5 col-start-2 flex items-center gap-3 text-[10px] text-muted-foreground">
+                      {p.t != null && (
+                        <span className="flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          t={p.t}
+                        </span>
+                      )}
+                      {anchorLocked && <span className="uppercase tracking-wide text-primary">已锁定 HomePos</span>}
+                    </div>
+                  )}
                 </div>
-                <div className="flex items-center justify-end gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
-                  <Button 
-                    size="icon" 
-                    variant="ghost" 
-                    className="h-6 w-6" 
-                    onClick={() => move(i, -1)} 
-                    disabled={i === 0 || !isEditable || (lockAnchors && (i === 0 || i === points.length - 1))}
-                    title="上移"
-                  >
-                    <ArrowUp className="w-3 h-3" />
-                  </Button>
-                  <Button 
-                    size="icon" 
-                    variant="ghost" 
-                    className="h-6 w-6" 
-                    onClick={() => move(i, 1)} 
-                    disabled={i === points.length - 1 || !isEditable || (lockAnchors && (i === points.length - 1 || i === 0))}
-                    title="下移"
-                  >
-                    <ArrowDown className="w-3 h-3" />
-                  </Button>
-                  <Button 
-                    size="icon" 
-                    variant="ghost" 
-                    className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10" 
-                    onClick={() => removePoint(i)}
-                    disabled={!isEditable || (lockAnchors && (i === 0 || i === points.length - 1))}
-                    title="删除"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </Button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
             {points.length === 0 && (
               <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
                 <MapPin className="w-8 h-8 opacity-20" />

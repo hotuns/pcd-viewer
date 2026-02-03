@@ -21,6 +21,7 @@ import { normalizeTaskType } from "@/lib/taskTypes";
 import { convertBodyPositionToViewer, convertViewerPositionToBody } from "@/lib/frameTransforms";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { uploadMissionFile } from "@/lib/upload";
 
 interface MissionControllerProps {
   initialMission?: Mission | null;
@@ -74,12 +75,12 @@ export default function MissionController({ initialMission, onBack }: MissionCon
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedPathIndex, setSelectedPathIndex] = useState<number | null>(null);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
-  const [editorHeight, setEditorHeight] = useState(280);
   const [sceneCloudVisible, setSceneCloudVisible] = useState(true);
   const [sceneRenderMode, setSceneRenderMode] = useState<'points' | 'mesh' | 'voxel'>('points');
   const [sceneColorMode, setSceneColorMode] = useState<'none' | 'height' | 'intensity' | 'rgb'>('none');
   const [performanceMode, setPerformanceMode] = useState(false);
-  const editorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [pendingName, setPendingName] = useState(initialMission?.name ?? "");
   const canvasRef = useRef<PCDCanvasHandle | null>(null);
   const { updateMission: updateMissionDB } = useMissionDatabase();
   const { rosUrl, setRosUrl, rosConnected, rosRef, connectROS, disconnectROS, connectionError } = useRosConnection();
@@ -113,13 +114,19 @@ export default function MissionController({ initialMission, onBack }: MissionCon
     } else if (initialMission?.home) {
       setEmergencyPose(initialMission.home);
     }
+    setPendingName(initialMission?.name ?? "");
+    setIsEditingName(false);
   }, [initialMission]);
 
   useEffect(() => {
     if (selectedMission?.home) {
       setHomePose(selectedMission.home);
     }
-  }, [selectedMission?.home]);
+    if (selectedMission) {
+      setPendingName(selectedMission.name);
+      setIsEditingName(false);
+    }
+  }, [selectedMission?.home, selectedMission]);
 
   useEffect(() => {
     if (selectedMission?.emergency) {
@@ -146,21 +153,12 @@ export default function MissionController({ initialMission, onBack }: MissionCon
     }
   }, [handleMissionUpdate, selectedMission]);
 
-  const fileToDataUrl = useCallback((file: File) => {
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  }, []);
-
   const handleTrajectorySave = useCallback(async (file: File, _json: string) => {
     void _json;
     if (!selectedMission) return;
     try {
-      const dataUrl = await fileToDataUrl(file);
-      await handleMissionUpdate({ ...selectedMission, trajectory: { type: "url", url: dataUrl } });
+      const uploadedUrl = await uploadMissionFile(file, "trajectory");
+      await handleMissionUpdate({ ...selectedMission, trajectory: { type: "url", url: uploadedUrl } });
       try {
         const text = await file.text();
         const parsed = JSON.parse(text);
@@ -172,7 +170,7 @@ export default function MissionController({ initialMission, onBack }: MissionCon
     } catch (error) {
       console.error("Failed to save trajectory file", error);
     }
-  }, [fileToDataUrl, handleMissionUpdate, selectedMission]);
+  }, [handleMissionUpdate, selectedMission]);
 
   const handleTrajectoryPointsChange = useCallback((points: PlannedPoint[]) => {
     setPlannedPoints(points.map((p) => ({
@@ -193,6 +191,13 @@ export default function MissionController({ initialMission, onBack }: MissionCon
     });
   }, [plannedPoints]);
 
+  const viewerPredictedTrajectory = useMemo(() => {
+    return (missionRuntime.predictedTrajectory ?? []).map((p) => {
+      const viewerPos = convertBodyPositionToViewer({ x: p.x, y: p.y, z: p.z });
+      return { ...p, x: viewerPos.x, y: viewerPos.y, z: viewerPos.z };
+    });
+  }, [missionRuntime.predictedTrajectory]);
+
   const handleCanvasPointsChange = useCallback((points: PlannedPoint[]) => {
     const rosPoints = points.map((p) => {
       const bodyPos = convertViewerPositionToBody({ x: p.x, y: p.y, z: p.z });
@@ -206,31 +211,6 @@ export default function MissionController({ initialMission, onBack }: MissionCon
   }, []);
 
 
-  const handleEditorResizeMove = useCallback((event: MouseEvent) => {
-    if (!editorResizeRef.current) return;
-    const delta = event.clientY - editorResizeRef.current.startY;
-    const next = Math.min(480, Math.max(180, editorResizeRef.current.startHeight - delta));
-    setEditorHeight(next);
-  }, []);
-
-  const handleEditorResizeEnd = useCallback(() => {
-    editorResizeRef.current = null;
-    window.removeEventListener("mousemove", handleEditorResizeMove);
-    window.removeEventListener("mouseup", handleEditorResizeEnd);
-  }, [handleEditorResizeMove]);
-
-  const handleEditorResizeStart = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    editorResizeRef.current = { startY: event.clientY, startHeight: editorHeight };
-    window.addEventListener("mousemove", handleEditorResizeMove);
-    window.addEventListener("mouseup", handleEditorResizeEnd);
-  }, [editorHeight, handleEditorResizeEnd, handleEditorResizeMove]);
-
-  useEffect(() => {
-    return () => {
-      window.removeEventListener("mousemove", handleEditorResizeMove);
-      window.removeEventListener("mouseup", handleEditorResizeEnd);
-    };
-  }, [handleEditorResizeEnd, handleEditorResizeMove]);
 
   useEffect(() => {
     let cancelled = false;
@@ -362,6 +342,8 @@ export default function MissionController({ initialMission, onBack }: MissionCon
 
   const canManualComplete = !!currentMission && currentMission.status !== "completed" && currentMission.status !== "failed";
 
+  const sidebarWidthClass = sidebarCollapsed ? "w-10" : missionStage === "planning" && showDetails ? "w-[440px]" : "w-80";
+
   return (
     <div className="w-full h-full flex flex-col bg-slate-950 text-slate-100 overflow-hidden">
 
@@ -372,7 +354,7 @@ export default function MissionController({ initialMission, onBack }: MissionCon
       )}
 
     <div className="flex flex-1 min-h-0">
-      <aside className={cn("border-r border-slate-800 bg-slate-900 flex flex-col min-h-0 transition-all duration-300", sidebarCollapsed ? "w-10" : "w-80")}>
+      <aside className={cn("border-r border-slate-800 bg-slate-900 flex flex-col min-h-0 transition-all duration-300", sidebarWidthClass)}>
         <div className="border-b border-slate-800 px-2 py-2 flex flex-col gap-2">
           <div className="flex items-center gap-2">
             <Tooltip>
@@ -400,7 +382,55 @@ export default function MissionController({ initialMission, onBack }: MissionCon
             )}
             {!sidebarCollapsed && (
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-semibold truncate">{currentMission?.name ?? "未命名任务"}</div>
+                {isEditingName ? (
+                  <div className="flex items-center gap-1">
+                    <Input
+                      value={pendingName}
+                      onChange={(e) => setPendingName(e.target.value)}
+                      className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100"
+                      placeholder="输入任务名称"
+                    />
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      onClick={() => {
+                        if (!currentMission) return;
+                        const nextName = pendingName.trim() || currentMission.name;
+                        void handleMissionUpdate({ ...currentMission, name: nextName });
+                        setIsEditingName(false);
+                      }}
+                    >
+                      <CheckCircle2 className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      onClick={() => {
+                        setPendingName(currentMission?.name ?? "");
+                        setIsEditingName(false);
+                      }}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm font-semibold truncate">{currentMission?.name ?? "未命名任务"}</div>
+                    {currentMission && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-6 w-6"
+                        onClick={() => setIsEditingName(true)}
+                        title="编辑名称"
+                      >
+                        <Edit3 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                  </div>
+                )}
                 <div className="text-[10px] text-slate-500">{rosConnected ? "ROS 已连接" : "ROS 未连接"}</div>
               </div>
             )}
@@ -502,30 +532,82 @@ export default function MissionController({ initialMission, onBack }: MissionCon
               </div>
             )}
 
+
             {missionStage === "planning" && currentMission && (
-              <div className="space-y-3 border border-slate-800 rounded p-3 bg-slate-900/50 text-xs text-slate-400">
-                {!hasMandatoryPoints && (
-                  <div className="text-amber-300 bg-amber-500/10 rounded px-3 py-2 border border-amber-500/40">
-                    请先设置迫降点后再编辑航线。
+              <>
+                <div className="space-y-3 border border-slate-800 rounded p-3 bg-slate-900/50 text-xs text-slate-400">
+                  {!hasMandatoryPoints && (
+                    <div className="text-amber-300 bg-amber-500/10 rounded px-3 py-2 border border-amber-500/40">
+                      请先设置迫降点后再编辑航线。
+                    </div>
+                  )}
+                  <p>航点编辑面板位于左侧，可在完成调整后标记规划完成。</p>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        size="icon"
+                        variant="outline"
+                        className="h-8 w-8"
+                        onClick={() => {
+                          void handleMissionUpdate({ ...currentMission, status: "ready" });
+                        }}
+                      >
+                        <FileCheck2 className="h-4 w-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>完成规划</TooltipContent>
+                  </Tooltip>
+                </div>
+
+                {showDetails && (
+                  <div className="border border-slate-800 bg-slate-900/70 rounded flex flex-col min-h-[420px]">
+                    <div className="p-3 space-y-4">
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                        <div className="text-sm font-semibold text-slate-200">航点编辑</div>
+                        <label className="flex items-center gap-1">
+                          宽度
+                          <Input
+                            type="number"
+                            min="1"
+                            step="0.5"
+                            value={pathLineWidth}
+                            onChange={(e) => {
+                              const value = Number(e.target.value);
+                              setPathLineWidth(Number.isFinite(value) ? Math.max(1, value) : 1);
+                            }}
+                            className="h-7 w-20 text-xs bg-slate-900 border-slate-700 text-slate-100"
+                          />
+                        </label>
+                        <label className="flex items-center gap-1">
+                          点大小
+                          <Input
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={waypointSize}
+                            onChange={(e) => {
+                              const value = Number(e.target.value);
+                              setWaypointSize(Number.isFinite(value) ? Math.max(0.01, value) : 0.05);
+                            }}
+                            className="h-7 w-20 text-xs bg-slate-900 border-slate-700 text-slate-100"
+                          />
+                        </label>
+                        <div className="ml-auto text-slate-500">{plannedPoints.length} 个航点</div>
+                      </div>
+                      <TrajectoryEditor
+                        mission={currentMission}
+                        onSaveAction={handleTrajectorySave}
+                        onPointsChangeAction={handleTrajectoryPointsChange}
+                        externalPoints={plannedPoints}
+                        editable={isPlanning && hasMandatoryPoints}
+                        selectedIndex={selectedPathIndex}
+                        onSelectIndex={setSelectedPathIndex}
+                        lockAnchors={false}
+                      />
+                    </div>
                   </div>
                 )}
-                <p>航点属性面板位于 3D 视图底部，可在完成调整后标记规划完成。</p>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      size="icon"
-                      variant="outline"
-                      className="h-8 w-8"
-                      onClick={() => {
-                        void handleMissionUpdate({ ...currentMission, status: "ready" });
-                      }}
-                    >
-                      <FileCheck2 className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>完成规划</TooltipContent>
-                </Tooltip>
-              </div>
+              </>
             )}
 
             {missionStage === "runtime" && (
@@ -588,6 +670,7 @@ export default function MissionController({ initialMission, onBack }: MissionCon
             onPlannedPointsChange={isPlanning ? handleCanvasPointsChange : undefined}
             selectedPointIndex={selectedPathIndex}
             onSelectPoint={isPlanning ? setSelectedPathIndex : undefined}
+            predictedTrajectoryPoints={viewerPredictedTrajectory}
             waypoints={decoratedWaypoints}
             currentWaypointIndex={currentWaypointIndex}
             dronePosition={missionRuntime.dronePosition}
@@ -710,62 +793,6 @@ export default function MissionController({ initialMission, onBack }: MissionCon
             </div>
           )}
 
-          {showDetails && (
-            <div className="absolute inset-x-4 bottom-4 bg-slate-950/95 border border-slate-800 shadow-2xl rounded-md">
-              <div className="px-4 py-2 flex flex-wrap items-center gap-4 border-b border-slate-800 text-xs text-slate-400">
-                <div className="text-sm font-semibold text-slate-200">航点编辑</div>
-                <label className="flex items-center gap-2">
-                  宽度
-                  <Input
-                    type="number"
-                    min="1"
-                    step="0.5"
-                    value={pathLineWidth}
-                    onChange={(e) => {
-                      const value = Number(e.target.value);
-                      setPathLineWidth(Number.isFinite(value) ? Math.max(1, value) : 1);
-                    }}
-                    className="h-7 w-20 text-xs bg-slate-900 border-slate-700 text-slate-100"
-                  />
-                </label>
-                <label className="flex items-center gap-2">
-                  点大小
-                  <Input
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    value={waypointSize}
-                    onChange={(e) => {
-                      const value = Number(e.target.value);
-                      setWaypointSize(Number.isFinite(value) ? Math.max(0.01, value) : 0.05);
-                    }}
-                    className="h-7 w-20 text-xs bg-slate-900 border-slate-700 text-slate-100"
-                  />
-                </label>
-                <div className="ml-auto text-slate-500">{plannedPoints.length} 个航点</div>
-              </div>
-              <div className="mt-3 border-t border-slate-800 relative overflow-hidden">
-                <div
-                  className="absolute -top-2 left-0 right-0 h-3 cursor-row-resize flex items-center justify-center"
-                  onMouseDown={handleEditorResizeStart}
-                >
-                  <div className="w-10 h-0.5 bg-slate-600 rounded-full" />
-                </div>
-                <div className="h-full overflow-y-auto" style={{ height: `${editorHeight}px` }}>
-                  <TrajectoryEditor
-                    mission={currentMission!}
-                    onSaveAction={handleTrajectorySave}
-                    onPointsChangeAction={handleTrajectoryPointsChange}
-                    externalPoints={plannedPoints}
-                    editable={isPlanning && hasMandatoryPoints}
-                    selectedIndex={selectedPathIndex}
-                    onSelectIndex={setSelectedPathIndex}
-                    lockAnchors={false}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
         </main>
       </div>
     </div>

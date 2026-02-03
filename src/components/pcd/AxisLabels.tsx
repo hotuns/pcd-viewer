@@ -82,12 +82,14 @@ export function AxisLabels({
           <Html
             key={`${axis}-${description}`}
             position={labelPosition}
+            zIndexRange={[0, 5]}
             style={{
               fontSize: "11px",
               color: "white",
               textTransform: "uppercase",
               letterSpacing: "0.05em",
               userSelect: "none",
+              pointerEvents: "none",
               whiteSpace: "nowrap",
             }}
             center

@@ -11,6 +11,8 @@ interface DroneModelProps {
 
 export function DroneModel({ position, orientation }: DroneModelProps) {
   const { scene } = useGLTF('/drone.glb');
+  // const { scene } = useGLTF('/1drone.glb');
+
   const finalQuaternion = useMemo(() => {
     if (orientation) {
       const rosQuaternion = new THREE.Quaternion(orientation.x, orientation.y, orientation.z, orientation.w);
@@ -66,3 +68,4 @@ export function DroneModel({ position, orientation }: DroneModelProps) {
 
 // 预加载GLTF模型
 useGLTF.preload('/drone.glb');
+// useGLTF.preload('/1drone.glb');

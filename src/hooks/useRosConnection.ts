@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // @ts-expect-error - roslib 没有官方类型定义
 import ROSLIB from "roslib";
 
-export function useRosConnection(initialUrl: string = "ws://192.168.203.30:9999") {
+export function useRosConnection(initialUrl: string = "") {
   const STORAGE_KEY = "pcd-viewer.ros-url";
   const [rosUrl, setRosUrlState] = useState(initialUrl);
   const [rosConnected, setRosConnected] = useState(false);
@@ -32,8 +32,11 @@ export function useRosConnection(initialUrl: string = "ws://192.168.203.30:9999"
   }, [rosUrl]);
 
   const connectROS = useCallback(() => {
-    if (!rosUrl) return;
-    
+    if (!rosUrl) {
+      setConnectionError("请先输入正确的 ws 地址");
+      return;
+    }
+
     try {
       // 断开旧连接
       if (rosRef.current) {
@@ -66,7 +69,7 @@ export function useRosConnection(initialUrl: string = "ws://192.168.203.30:9999"
     } catch (error) {
       console.error('Failed to connect to ROS:', error);
       setConnectionError('ROS 连接失败，请检查 ws 地址');
-      throw new Error('ROS 连接失败');
+      rosRef.current = null;
     }
   }, [rosUrl]);
 
@@ -78,10 +81,6 @@ export function useRosConnection(initialUrl: string = "ws://192.168.203.30:9999"
     setRosConnected(false);
     setConnectionError(null);
   }, []);
-
-  useEffect(() => {
-    connectROS();
-  }, [connectROS]);
 
   return {
     rosUrl,
