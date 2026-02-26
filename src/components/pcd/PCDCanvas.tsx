@@ -131,6 +131,8 @@ export type PCDCanvasProps = {
   followDrone?: boolean; // 视角跟随飞机
   waypoints?: Waypoint[]; // 航点状态信息
   currentWaypointIndex?: number; // 当前目标航点
+  rectangleSelectEnabled?: boolean;
+  onRectangleSelectComplete?: (bounds: { minX: number; maxX: number; minZ: number; maxZ: number } | null) => void;
 };
 
 function SceneFitter({
@@ -241,8 +243,152 @@ function SceneResetter({
   return null;
 }
 
+type SelectionBounds = { minX: number; maxX: number; minZ: number; maxZ: number };
+type NormalizedRect = { x0: number; y0: number; x1: number; y1: number };
+
+function RectangleSelector({
+  enabled,
+  onUpdate,
+  onComplete,
+}: {
+  enabled: boolean;
+  onUpdate?: (rect: NormalizedRect | null) => void;
+  onComplete?: (bounds: SelectionBounds | null) => void;
+}) {
+  const { gl, camera } = useThree();
+  const plane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), []);
+  const startRef = useRef<{ world: THREE.Vector3; screen: { x: number; y: number } } | null>(null);
+
+  useEffect(() => {
+    if (!enabled) {
+      onUpdate?.(null);
+      startRef.current = null;
+      return;
+    }
+    const canvas = gl.domElement;
+    const raycaster = new THREE.Raycaster();
+
+    const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+
+    const getIntersection = (event: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const ndc = new THREE.Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      raycaster.setFromCamera(ndc, camera);
+      const hit = raycaster.ray.intersectPlane(plane, new THREE.Vector3());
+      if (!hit) return null;
+      return {
+        world: hit.clone(),
+        screen: {
+          x: clamp01((event.clientX - rect.left) / rect.width),
+          y: clamp01((event.clientY - rect.top) / rect.height),
+        },
+      };
+    };
+
+    const finish = (bounds: SelectionBounds | null) => {
+      onUpdate?.(null);
+      onComplete?.(bounds);
+      startRef.current = null;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerCancel);
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!startRef.current) return;
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const screen = {
+        x: clamp01((event.clientX - rect.left) / rect.width),
+        y: clamp01((event.clientY - rect.top) / rect.height),
+      };
+      onUpdate?.({ x0: startRef.current.screen.x, y0: startRef.current.screen.y, x1: screen.x, y1: screen.y });
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      if (!startRef.current) {
+        finish(null);
+        return;
+      }
+      event.preventDefault();
+      const endHit = getIntersection(event);
+      if (!endHit) {
+        finish(null);
+        return;
+      }
+      const bounds: SelectionBounds = {
+        minX: Math.min(startRef.current.world.x, endHit.world.x),
+        maxX: Math.max(startRef.current.world.x, endHit.world.x),
+        minZ: Math.min(startRef.current.world.z, endHit.world.z),
+        maxZ: Math.max(startRef.current.world.z, endHit.world.z),
+      };
+      finish(bounds);
+    };
+
+    const handlePointerCancel = () => {
+      finish(null);
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!enabled || event.button !== 0) return;
+      const hit = getIntersection(event);
+      if (!hit) return;
+      event.preventDefault();
+      startRef.current = hit;
+      onUpdate?.({ x0: hit.screen.x, y0: hit.screen.y, x1: hit.screen.x, y1: hit.screen.y });
+      window.addEventListener("pointermove", handlePointerMove, { passive: false });
+      window.addEventListener("pointerup", handlePointerUp);
+      window.addEventListener("pointercancel", handlePointerCancel);
+    };
+
+    canvas.addEventListener("pointerdown", handlePointerDown, { passive: false });
+    return () => {
+      canvas.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerCancel);
+      startRef.current = null;
+      onUpdate?.(null);
+    };
+  }, [enabled, gl, camera, plane, onUpdate, onComplete]);
+
+  return null;
+}
+
 export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PCDCanvas(
-  { source, livePointClouds = [], pointSize = 0.01, performanceMode = false, showGrid = true, showAxes = true, showSceneCloud = true, colorMode = "none", roundPoints = true, voxelSize = 0.2, onLoadedAction, onLoadingChange, sceneRenderMode = 'points', plannedPathPoints, plannedPathVisible = true, plannedPointSize = 0.05, plannedPathLineWidth = 2, plannedPathEditable = false, onPlannedPointsChange, selectedPointIndex, onSelectPoint, predictedTrajectoryPoints, dronePosition, followDrone = false, waypoints, currentWaypointIndex },
+  {
+    source,
+    livePointClouds = [],
+    pointSize = 0.01,
+    performanceMode = false,
+    showGrid = true,
+    showAxes = true,
+    showSceneCloud = true,
+    colorMode = "none",
+    roundPoints = true,
+    voxelSize = 0.2,
+    onLoadedAction,
+    onLoadingChange,
+    sceneRenderMode = 'points',
+    plannedPathPoints,
+    plannedPathVisible = true,
+    plannedPointSize = 0.05,
+    plannedPathLineWidth = 2,
+    plannedPathEditable = false,
+    onPlannedPointsChange,
+    selectedPointIndex,
+    onSelectPoint,
+    predictedTrajectoryPoints,
+    dronePosition,
+    followDrone = false,
+    waypoints,
+    currentWaypointIndex,
+    rectangleSelectEnabled = false,
+    onRectangleSelectComplete,
+  },
   ref
 ) {
   const [geom, setGeom] = useState<THREE.BufferGeometry | null>(null);
@@ -294,11 +440,6 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
   const fadeNear = performanceMode ? 1.5 : 2.0;
   const fadeFar = performanceMode ? 5.5 : 8.0;
 
-  useEffect(() => {
-    return () => {
-      liveCloudGeometries.forEach(({ geometry }) => geometry.dispose());
-    };
-  }, [liveCloudGeometries]);
   // 生成一个圆形纹理用于点精灵（圆盘效果，边缘柔和）
   const circleTexture = useRef<THREE.Texture | null>(null);
   const pointMaterialRef = useRef<THREE.PointsMaterial | null>(null);
@@ -376,6 +517,23 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
     }
   }, [onSelectPoint]);
   const [pathVersion, setPathVersion] = useState(0);
+  const [screenSelectionRect, setScreenSelectionRect] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  useEffect(() => {
+    return () => {
+      liveCloudGeometries.forEach(({ geometry }) => geometry.dispose());
+    };
+  }, [liveCloudGeometries]);
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (controls) {
+      controls.enabled = !rectangleSelectEnabled;
+    }
+    return () => {
+      if (controls) {
+        controls.enabled = true;
+      }
+    };
+  }, [rectangleSelectEnabled]);
   useEffect(() => {
     setPathVersion((v) => {
       const next = v + 1;
@@ -387,6 +545,27 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
   useEffect(() => { onLoadingChangeRef.current = onLoadingChange; }, [onLoadingChange]);
   useEffect(() => { onPlannedPointsChangeRef.current = onPlannedPointsChange; }, [onPlannedPointsChange]);
   useEffect(() => { plannedPointsRef.current = plannedPathPoints; }, [plannedPathPoints]);
+  useEffect(() => {
+    return () => {
+      liveCloudGeometries.forEach(({ geometry }) => geometry.dispose());
+    };
+  }, [liveCloudGeometries]);
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (controls) {
+      controls.enabled = !rectangleSelectEnabled;
+    }
+    return () => {
+      if (controls) {
+        controls.enabled = true;
+      }
+    };
+  }, [rectangleSelectEnabled]);
+  useEffect(() => {
+    if (!rectangleSelectEnabled) {
+      setScreenSelectionRect(null);
+    }
+  }, [rectangleSelectEnabled, setScreenSelectionRect]);
   useEffect(() => { selectedIdxRef.current = selectedIdx; }, [selectedIdx]);
   useEffect(() => {
     const length = plannedPathPoints?.length ?? 0;
@@ -997,11 +1176,37 @@ export const PCDCanvas = forwardRef<PCDCanvasHandle, PCDCanvasProps>(function PC
         <SceneResetter controlsRef={controlsRef} registerReset={registerReset} />
         <CameraOrienter controlsRef={controlsRef} registerOrient={registerOrient} />
         <CameraFollower dronePosition={dronePosition ?? null} followDrone={followDrone} controlsRef={controlsRef} />
+        <RectangleSelector
+          enabled={rectangleSelectEnabled}
+          onUpdate={setScreenSelectionRect}
+          onComplete={(bounds) => {
+            setScreenSelectionRect(null);
+            onRectangleSelectComplete?.(bounds);
+          }}
+        />
       </Canvas>
       {plannedPathEditable && selectedIdx == null && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
           <div className="bg-background/90 px-3 py-1 rounded border border-border/50 shadow">
             选中航点后可拖动 Gizmo 调整位置
+          </div>
+        </div>
+      )}
+      {rectangleSelectEnabled && (
+        <div className="pointer-events-none absolute inset-0">
+          {screenSelectionRect && (
+            <div
+              className="absolute border border-sky-400 bg-sky-400/10 rounded-sm"
+              style={{
+                left: `${Math.min(screenSelectionRect.x0, screenSelectionRect.x1) * 100}%`,
+                top: `${Math.min(screenSelectionRect.y0, screenSelectionRect.y1) * 100}%`,
+                width: `${Math.abs(screenSelectionRect.x1 - screenSelectionRect.x0) * 100}%`,
+                height: `${Math.abs(screenSelectionRect.y1 - screenSelectionRect.y0) * 100}%`,
+              }}
+            />
+          )}
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-slate-900/80 text-xs text-slate-200 px-3 py-1 rounded-full border border-slate-700/60">
+            在 3D 视图中拖拽以框选作业范围
           </div>
         </div>
       )}

@@ -63,6 +63,38 @@ const parseTrajectoryPoints = (raw: unknown): PlannedPoint[] => {
   });
 };
 
+type CoverageRect = { minX: number; maxX: number; minZ: number; maxZ: number };
+
+const generateViewerCoveragePoints = (rect: CoverageRect, altitude: number, spacing: number): { x: number; y: number; z: number }[] => {
+  const width = rect.maxX - rect.minX;
+  const depth = rect.maxZ - rect.minZ;
+  if (width <= 0 || depth <= 0) return [];
+  const safeSpacing = Math.max(0.1, spacing);
+  const xPositions: number[] = [];
+  let currentX = rect.minX;
+  while (currentX <= rect.maxX + 1e-3) {
+    xPositions.push(currentX);
+    currentX += safeSpacing;
+  }
+  if (xPositions.length === 0 || xPositions[xPositions.length - 1] < rect.maxX - 1e-3) {
+    xPositions.push(rect.maxX);
+  }
+  if (xPositions.length === 1) {
+    xPositions.push(rect.maxX);
+  }
+  const altitudeClamped = Math.max(0, altitude);
+  const points: { x: number; y: number; z: number }[] = [];
+  xPositions.forEach((x, idx) => {
+    const startZ = idx % 2 === 0 ? rect.minZ : rect.maxZ;
+    const endZ = idx % 2 === 0 ? rect.maxZ : rect.minZ;
+    if (points.length === 0) {
+      points.push({ x, y: altitudeClamped, z: startZ });
+    }
+    points.push({ x, y: altitudeClamped, z: endZ });
+  });
+  return points;
+};
+
 export default function MissionController({ initialMission, onBack }: MissionControllerProps) {
   const [selectedMission, setSelectedMission] = useState<Mission | null>(initialMission ?? null);
   const [plannedPoints, setPlannedPoints] = useState<PlannedPoint[]>([]);
@@ -81,6 +113,9 @@ export default function MissionController({ initialMission, onBack }: MissionCon
   const [performanceMode, setPerformanceMode] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const [pendingName, setPendingName] = useState(initialMission?.name ?? "");
+  const [autoPlanAltitude, setAutoPlanAltitude] = useState(30);
+  const [autoPlanSpacing, setAutoPlanSpacing] = useState(10);
+  const [autoPlanSelecting, setAutoPlanSelecting] = useState(false);
   const canvasRef = useRef<PCDCanvasHandle | null>(null);
   const { updateMission: updateMissionDB } = useMissionDatabase();
   const { rosUrl, setRosUrl, rosConnected, rosRef, connectROS, disconnectROS, connectionError } = useRosConnection();
@@ -210,6 +245,25 @@ export default function MissionController({ initialMission, onBack }: MissionCon
     canvasRef.current?.orientToPlane?.(plane);
   }, []);
 
+  const handleAutoPlanSelection = useCallback((bounds: CoverageRect | null) => {
+    setAutoPlanSelecting(false);
+    if (!bounds) return;
+    if (plannedPoints.length > 0) return;
+    const viewerPoints = generateViewerCoveragePoints(bounds, autoPlanAltitude, autoPlanSpacing);
+    if (viewerPoints.length < 2) return;
+    const rosPoints: PlannedPoint[] = viewerPoints.map((p) => {
+      const body = convertViewerPositionToBody({ x: p.x, y: p.y, z: p.z });
+      return {
+        x: body.x,
+        y: body.y,
+        z: body.z,
+        w: 0,
+        task_type: 0,
+      };
+    });
+    handleTrajectoryPointsChange(rosPoints);
+  }, [plannedPoints.length, autoPlanAltitude, autoPlanSpacing, handleTrajectoryPointsChange]);
+
 
 
   useEffect(() => {
@@ -257,6 +311,18 @@ export default function MissionController({ initialMission, onBack }: MissionCon
       setSelectedPathIndex(null);
     }
   }, [isPlanning]);
+
+  useEffect(() => {
+    if (plannedPoints.length > 0 && autoPlanSelecting) {
+      setAutoPlanSelecting(false);
+    }
+  }, [plannedPoints.length, autoPlanSelecting]);
+
+  useEffect(() => {
+    if (!isPlanning && autoPlanSelecting) {
+      setAutoPlanSelecting(false);
+    }
+  }, [isPlanning, autoPlanSelecting]);
 
   const decoratedWaypoints = useMemo<Waypoint[]>(() => {
     if (!plannedPoints || plannedPoints.length === 0) return [];
@@ -342,7 +408,7 @@ export default function MissionController({ initialMission, onBack }: MissionCon
 
   const canManualComplete = !!currentMission && currentMission.status !== "completed" && currentMission.status !== "failed";
 
-  const sidebarWidthClass = sidebarCollapsed ? "w-10" : missionStage === "planning" && showDetails ? "w-[440px]" : "w-80";
+  const sidebarWidthClass = sidebarCollapsed ? "w-10" : missionStage === "planning" && showDetails ? "w-[520px]" : "w-80";
 
   return (
     <div className="w-full h-full flex flex-col bg-slate-950 text-slate-100 overflow-hidden">
@@ -594,6 +660,57 @@ export default function MissionController({ initialMission, onBack }: MissionCon
                         </label>
                         <div className="ml-auto text-slate-500">{plannedPoints.length} 个航点</div>
                       </div>
+
+                      <div className="rounded-md border border-slate-700/60 bg-slate-950/60 p-3 space-y-3 text-xs">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-200">自动生成航线</div>
+                            <p className="text-[11px] text-slate-500">无航点时可输入高度、间距后在 3D 视图框选生成。</p>
+                          </div>
+                          <Button
+                            size="sm"
+                            className="h-7 px-3"
+                            variant={autoPlanSelecting ? "default" : "outline"}
+                            disabled={plannedPoints.length > 0 || !isPlanning}
+                            onClick={() => setAutoPlanSelecting((prev) => !prev)}
+                          >
+                            {autoPlanSelecting ? "正在框选" : "框选生成"}
+                          </Button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">
+                          <label className="space-y-1">
+                            <span>高度 (m)</span>
+                            <Input
+                              type="number"
+                              min="0"
+                              step="1"
+                              value={autoPlanAltitude}
+                              onChange={(e) => setAutoPlanAltitude(Number(e.target.value) || 0)}
+                              disabled={!isPlanning}
+                              className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100"
+                            />
+                          </label>
+                          <label className="space-y-1">
+                            <span>间距 (m)</span>
+                            <Input
+                              type="number"
+                              min="0.1"
+                              step="0.5"
+                              value={autoPlanSpacing}
+                              onChange={(e) => setAutoPlanSpacing(Number(e.target.value) || 0)}
+                              disabled={!isPlanning}
+                              className="h-7 text-xs bg-slate-900 border-slate-700 text-slate-100"
+                            />
+                          </label>
+                        </div>
+                        {plannedPoints.length > 0 && (
+                          <div className="text-[11px] text-amber-400">当前已有航点，清空后可重新生成。</div>
+                        )}
+                        {autoPlanSelecting && (
+                          <div className="text-[11px] text-sky-400">请在右侧 3D 视图中拖拽矩形选择作业范围。</div>
+                        )}
+                      </div>
+
                       <TrajectoryEditor
                         mission={currentMission}
                         onSaveAction={handleTrajectorySave}
@@ -681,6 +798,8 @@ export default function MissionController({ initialMission, onBack }: MissionCon
             performanceMode={performanceMode}
             showGrid
             showAxes
+            rectangleSelectEnabled={autoPlanSelecting}
+            onRectangleSelectComplete={handleAutoPlanSelection}
           />
           <div className="absolute top-4 right-4 flex items-center gap-3 bg-slate-800/80 backdrop-blur rounded-full px-4 py-2 shadow">
             <label className="text-xs flex items-center gap-2 text-slate-200">

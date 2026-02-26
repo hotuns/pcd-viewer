@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -49,6 +49,10 @@ export default function TrajectoryEditor({
   const hasTrajectory = !!mission.trajectory;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const rowRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const [multiSelection, setMultiSelection] = useState<Set<number>>(new Set());
+  const [bulkOffset, setBulkOffset] = useState<{ dx: string; dy: string; dz: string }>({ dx: "0", dy: "0", dz: "0" });
+  const [bulkYawDelta, setBulkYawDelta] = useState<string>("0");
+  const [bulkTaskType, setBulkTaskType] = useState<string>("-");
 
   const parseTrajectoryJson = (text: string) => {
     const parsed = JSON.parse(text);
@@ -247,6 +251,72 @@ export default function TrajectoryEditor({
     }
   }, [selectedIndex]);
 
+  useEffect(() => {
+    setMultiSelection((prev) => {
+      const next = new Set<number>();
+      prev.forEach((idx) => {
+        if (idx < points.length) next.add(idx);
+      });
+      return next;
+    });
+  }, [points.length]);
+
+  const toggleRowSelection = useCallback((index: number) => {
+    setMultiSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  }, []);
+
+  const allSelected = useMemo(() => points.length > 0 && multiSelection.size === points.length, [points.length, multiSelection]);
+  const hasSelection = multiSelection.size > 0;
+
+  const setAllSelection = useCallback((checked: boolean) => {
+    if (!checked) {
+      setMultiSelection(new Set());
+      return;
+    }
+    setMultiSelection(new Set(points.map((_, idx) => idx)));
+  }, [points]);
+
+  const applyBulkTransform = useCallback(() => {
+    if (!hasSelection || !isEditable) return;
+    const dx = Number(bulkOffset.dx) || 0;
+    const dy = Number(bulkOffset.dy) || 0;
+    const dz = Number(bulkOffset.dz) || 0;
+    const yawDeltaDeg = Number(bulkYawDelta) || 0;
+    const yawDeltaRad = (yawDeltaDeg * Math.PI) / 180;
+    const nextTaskType = bulkTaskType !== "-" ? normalizeTaskType(bulkTaskType) ?? 0 : null;
+
+    setPoints((prev) => {
+      const updated = prev.map((pt, idx) => {
+        if (!multiSelection.has(idx)) return pt;
+        return {
+          ...pt,
+          x: pt.x + dx,
+          y: pt.y + dy,
+          z: pt.z + dz,
+          w: (pt.w ?? 0) + yawDeltaRad,
+          task_type: nextTaskType != null ? nextTaskType : pt.task_type,
+        };
+      });
+      onPointsChangeAction?.(updated);
+      return updated;
+    });
+  }, [bulkOffset.dx, bulkOffset.dy, bulkOffset.dz, bulkYawDelta, bulkTaskType, hasSelection, isEditable, multiSelection, onPointsChangeAction]);
+
+  const clearBulkSelection = useCallback(() => {
+    setMultiSelection(new Set());
+    setBulkOffset({ dx: "0", dy: "0", dz: "0" });
+    setBulkYawDelta("0");
+    setBulkTaskType("-");
+  }, []);
+
   return (
     <div className="space-y-4 p-2 h-full flex flex-col">
       <div className="flex items-center justify-between shrink-0">
@@ -358,6 +428,76 @@ export default function TrajectoryEditor({
         </Button>
       </div>
 
+      <div className="rounded-lg border border-slate-800/70 bg-slate-900/60 p-3 space-y-3 text-xs">
+        <div className="flex items-center justify-between text-slate-300">
+          <div>
+            <div className="font-semibold text-slate-200">批量编辑</div>
+            <p className="text-[11px] text-slate-500">多选航点后，可一次性平移或调整偏航/动作。</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1 text-[11px]">
+              <input
+                type="checkbox"
+                className="accent-slate-200"
+                checked={allSelected}
+                onChange={(e) => setAllSelection(e.target.checked)}
+                disabled={!isEditable || points.length === 0}
+              />
+              全选
+            </label>
+            <Button variant="ghost" size="sm" className="h-7 px-2" onClick={clearBulkSelection} disabled={!hasSelection}>
+              清空
+            </Button>
+          </div>
+        </div>
+        <div className="grid grid-cols-5 gap-2">
+          {(["dx", "dy", "dz"] as const).map((axis) => (
+            <Input
+              key={axis}
+              type="text"
+              inputMode="decimal"
+              placeholder={`Δ${axis.toUpperCase()} (m)`}
+              value={bulkOffset[axis]}
+              onChange={(e) => setBulkOffset((prev) => ({ ...prev, [axis]: e.target.value }))}
+              className="h-7 text-xs bg-slate-950 border-slate-700 text-slate-100"
+              disabled={!hasSelection || !isEditable}
+            />
+          ))}
+          <Input
+            type="text"
+            inputMode="decimal"
+            placeholder="ΔYaw (°)"
+            value={bulkYawDelta}
+            onChange={(e) => setBulkYawDelta(e.target.value)}
+            className="h-7 text-xs bg-slate-950 border-slate-700 text-slate-100"
+            disabled={!hasSelection || !isEditable}
+          />
+          <Select
+            value={bulkTaskType}
+            onValueChange={setBulkTaskType}
+            disabled={!hasSelection || !isEditable}
+          >
+            <SelectTrigger className="h-7 text-xs bg-slate-950 border-slate-700 text-slate-100">
+              <SelectValue placeholder="动作" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="-">保持原动作</SelectItem>
+              {TASK_TYPE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value.toString()}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center justify-between text-[11px] text-slate-400">
+          <span>已选 {multiSelection.size} / {points.length} 个航点</span>
+          <Button size="sm" className="h-7 px-3" onClick={applyBulkTransform} disabled={!hasSelection || !isEditable}>
+            应用批量调整
+          </Button>
+        </div>
+      </div>
+
       {!isEditable && (
         <div className="text-[11px] text-amber-400 bg-amber-500/10 rounded-md px-3 py-2 border border-amber-500/30">
           当前任务处于非规划阶段，请在上方切换到“编辑/规划”后调整航线。
@@ -398,7 +538,8 @@ export default function TrajectoryEditor({
       </div>
 
       <div className="flex-1 border border-slate-800 rounded-md bg-slate-900/50 flex flex-col min-h-[200px]">
-        <div className="grid grid-cols-[32px_repeat(5,minmax(0,1fr))_88px] gap-1.5 p-1.5 text-xs font-medium text-muted-foreground border-b bg-muted/50">
+        <div className="grid grid-cols-[28px_32px_repeat(5,minmax(0,1fr))_88px] gap-1.5 p-1.5 text-xs font-medium text-muted-foreground border-b bg-muted/50">
+          <div className="text-center text-[11px]">选</div>
           <div className="text-center">#</div>
           <div className="text-center">X</div>
           <div className="text-center">Y</div>
@@ -411,15 +552,30 @@ export default function TrajectoryEditor({
           <div className="divide-y divide-border/50">
             {points.map((p, i) => {
               const anchorLocked = lockAnchors && (i === 0 || i === points.length - 1);
+              const rowSelected = multiSelection.has(i);
+              const isActive = rowSelected || selectedIndex === i;
               return (
                 <div
                   key={i}
                   ref={(el) => {
                     rowRefs.current[i] = el;
                   }}
-                  className={`grid grid-cols-[32px_repeat(5,minmax(0,1fr))_88px] gap-1.5 p-1.5 items-center transition-colors group cursor-pointer ${selectedIndex === i ? "bg-primary/10 border border-primary/30 rounded-md" : "hover:bg-muted/30"}`}
+                  className={`grid grid-cols-[28px_32px_repeat(5,minmax(0,1fr))_88px] gap-1.5 p-1.5 items-center transition-colors group cursor-pointer ${isActive ? "bg-primary/10 border border-primary/30 rounded-md" : "hover:bg-muted/30"}`}
                   onClick={() => onSelectIndex?.(i)}
                 >
+                  <div className="flex items-center justify-center">
+                    <input
+                      type="checkbox"
+                      checked={multiSelection.has(i)}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        toggleRowSelection(i);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="accent-primary"
+                      disabled={!isEditable}
+                    />
+                  </div>
                   <div className="text-[11px] text-muted-foreground text-center font-mono">{i + 1}</div>
                   {(["x", "y", "z"] as const).map((axis) => (
                     <Input
